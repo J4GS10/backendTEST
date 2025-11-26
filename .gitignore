@@ -1,0 +1,16 @@
+# .gitignore
+# Excluir archivos compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Excluir entornos virtuales locales (si usas venv fuera de docker)
+venv/
+env/
+
+# Excluir variables de entorno (SEGURIDAD CRÍTICA)
+.env
+
+# Excluir base de datos local y archivos de sistema
+.DS_Store
+postgres_data/
