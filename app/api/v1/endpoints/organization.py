@@ -74,3 +74,26 @@ async def update_usuario(
         raise HTTPException(status_code=403, detail="NOT_AUTHORIZED")
 
     return await service.update_usuario(usuario_id, schema, requester_role=current_user.USU_Rol)
+
+@router.get("/usuarios", response_model=List[UsuarioResponse])
+async def list_usuarios(
+    service: OrganizationService = Depends(get_service),
+    current_user = Depends(deps.get_current_user)
+):
+    """
+    Listar todos los usuarios del sistema.
+    Restringido a SUPER_ADMIN y ADMIN_TI.
+    """
+    if current_user.USU_Rol not in ["SUPER_ADMIN", "ADMIN_TI"]:
+        raise HTTPException(status_code=403, detail="INSUFFICIENT_PERMISSIONS")
+        
+    return await service.get_usuarios()
+
+
+@router.get("/personas/disponibles", response_model=List[PersonaResponse])
+async def list_personas_disponibles(service: OrganizationService = Depends(get_service)):
+    """
+    Retorna solo las personas que aun no tienen usuario.
+    Ideal para selectores de creación de cuentas.
+    """
+    return await service.get_personas_disponibles()

@@ -16,7 +16,7 @@ async def init_production():
         # 1. Configuración Base (Marca Blanca Default)
         config = ConfiguracionSistema(
             SYS_Nombre_Empresa="Mi Empresa TI",
-            SYS_Color_Primario="#1976d2", # Azul Genérico
+            SYS_Color_Primario="#19d222", # Azul Genérico
             SYS_Idioma_Defecto="es"
         )
         db.add(config)
@@ -36,6 +36,9 @@ async def init_production():
         )
         db.add(persona_admin); await db.flush()
 
+
+        await db.commit()
+        logger.info('')
         # Credenciales Iniciales
         usuario_admin = Usuario(
             USU_Username="sa",

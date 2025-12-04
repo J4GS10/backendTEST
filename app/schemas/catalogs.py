@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, ConfigDict
 # =======================
 class TipoActivoBase(BaseModel):
     TAC_Nombre: str = Field(..., min_length=2, max_length=100)
+    TAC_Prefijo: Optional[str] = Field(None, max_length=10)
     TAC_Aplica_Depreciacion: bool = True
 
 class TipoActivoCreate(TipoActivoBase):

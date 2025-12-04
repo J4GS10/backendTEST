@@ -34,3 +34,17 @@ class ConfiguracionSistema(Base):
     SYS_Color_Primario = Column(String(10), default="#1e293b") # Hex
     SYS_Color_Secundario = Column(String(10), default="#3b82f6")
     SYS_Idioma_Defecto = Column(String(2), default="es")
+
+# ==========================================
+# 3. MOTOR DE SECUENCIAS (Generador de Códigos)
+# ==========================================
+class Secuencia(Base):
+    __tablename__ = "SYS_SECUENCIA"
+
+    SEC_Secuencia = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    
+    # Identificador del contexto (Ej: "ASSET_LPT", "DOC_ACTA")
+    SEC_Contexto = Column(String(50), unique=True, nullable=False)
+    
+    SEC_Ultimo_Numero = Column(Integer, default=0, nullable=False)
+    SEC_Relleno = Column(Integer, default=5, nullable=False) # Por defecto 5 ceros (00001)

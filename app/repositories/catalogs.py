@@ -31,6 +31,10 @@ class CatalogRepository:
         result = await self.db.execute(select(TipoActivo).where(TipoActivo.TAC_Nombre == name))
         return result.scalar_one_or_none()
 
+    async def get_tipo_activo_by_id(self, id: int) -> Optional[TipoActivo]:
+        result = await self.db.execute(select(TipoActivo).where(TipoActivo.TAC_Tipo_Activo == id))
+        return result.scalar_one_or_none()
+
     # --- MARCA ---
     async def create_marca(self, schema: MarcaCreate) -> Marca:
         db_obj = Marca(**schema.model_dump())

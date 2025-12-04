@@ -63,9 +63,14 @@ class PersonaResponse(PersonaBase):
 # =======================
 class UsuarioCreate(BaseModel):
     USU_Username: str = Field(..., min_length=4, max_length=50)
-    USU_Password: str = Field(..., min_length=8, description="Contraseña plana que será hasheada")
+    USU_Password: str = Field(..., min_length=8)
     USU_Rol: str = Field(..., pattern="^(SUPER_ADMIN|ADMIN_TI|TECNICO|AUDITOR)$")
-    PER_Persona: uuid.UUID # FK a Persona existente
+    PER_Persona: uuid.UUID 
+
+class UsuarioUpdate(BaseModel):
+    USU_Password: Optional[str] = Field(None, min_length=8)
+    USU_Rol: Optional[str] = Field(None, pattern="^(SUPER_ADMIN|ADMIN_TI|TECNICO|AUDITOR)$")
+    USU_Estado: Optional[bool] = None
 
 class UsuarioResponse(BaseModel):
     USU_Usuario: uuid.UUID
@@ -73,6 +78,6 @@ class UsuarioResponse(BaseModel):
     USU_Rol: str
     USU_Estado: bool
     USU_Ultimo_Login: Optional[datetime]
-    # JAMÁS devolvemos el Password Hash
+    persona: Optional[PersonaBase] = None 
     
     model_config = ConfigDict(from_attributes=True)

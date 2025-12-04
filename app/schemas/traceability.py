@@ -17,21 +17,31 @@ class TipoMovimientoResponse(TipoMovimientoBase):
     model_config = ConfigDict(from_attributes=True)
 
 # =======================
+# SCHEMAS ANIDADOS (Para mostrar nombres, no solo IDs)
+# =======================
+class ActivoSummary(BaseModel):
+    ACT_Codigo_Interno: str
+    ACT_Hostname: Optional[str] = None
+
+class PersonaSummary(BaseModel):
+    PER_Primer_Nombre: str
+    PER_Primer_Apellido: str
+    PER_Email_Corporativo: str
+
+class AreaSummary(BaseModel):
+    ARE_Nombre: str
+
+# =======================
 # MOVIMIENTOS (ASIGNACIONES)
 # =======================
 class MovimientoBase(BaseModel):
     ACT_Activo: uuid.UUID
     PER_Persona: uuid.UUID
     ARE_Area: int
-    TMO_Tipo_Movimiento: int # 1=Asignacion, 2=Prestamo, etc.
+    TMO_Tipo_Movimiento: int 
     MOV_Observacion: Optional[str] = None
 
 class MovimientoCreate(MovimientoBase):
-    """
-    Solo pedimos los datos básicos. 
-    La fecha de inicio la pone el sistema (NOW).
-    La fecha fin se queda en NULL (Vigente).
-    """
     pass
 
 class MovimientoResponse(MovimientoBase):
@@ -39,4 +49,15 @@ class MovimientoResponse(MovimientoBase):
     MOV_Fecha_Asignacion: datetime
     MOV_Fecha_Devolucion: Optional[datetime] = None
     
+    # --- AQUÍ ESTÁ LA MAGIA QUE FALTABA ---
+    # Estos campos coinciden con los nombres de las relaciones en el Modelo SQLAlchemy
+    activo: Optional[ActivoSummary] = None
+    persona: Optional[PersonaSummary] = None
+    tipo_movimiento: Optional[TipoMovimientoResponse] = None
+    area: Optional[AreaSummary] = None
+    
     model_config = ConfigDict(from_attributes=True)
+
+# Request para descarga por lote
+class ActaLoteRequest(BaseModel):
+    movimientos_ids: List[uuid.UUID]

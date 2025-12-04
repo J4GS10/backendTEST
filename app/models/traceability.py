@@ -45,6 +45,11 @@ class Movimiento(Base):
     activo = relationship("app.models.core.Activo", backref="movimientos")
     persona = relationship("app.models.organization.Persona", backref="movimientos")
     
+    # --- ESTAS FALTABAN ---
+    area = relationship("app.models.location.Area") 
+    tipo_movimiento = relationship("TipoMovimiento") 
+    # ----------------------
+    
     evidencias = relationship("Evidencia", back_populates="movimiento")
 
 
@@ -54,7 +59,6 @@ class Movimiento(Base):
 class Mantenimiento(Base):
     __tablename__ = "INV_MANTENIMIENTO"
 
-    # CORRECCIÓN: Nombre Completo
     MAN_Mantenimiento = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     
     MAN_Fecha_Ingreso = Column(DateTime, server_default=func.now())
@@ -78,13 +82,10 @@ class Mantenimiento(Base):
 class DetalleMantenimiento(Base):
     __tablename__ = "INV_DETALLE_MANT"
 
-    # CORRECCIÓN: Nombre Completo según diccionario
     DMA_Detalle_Mant = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    
     DMA_Accion_Realizada = Column(String(255), nullable=False)
     DMA_Costo_Item = Column(Numeric(10, 2), default=0)
 
-    # FK corregida apuntando a MAN_Mantenimiento
     MAN_Mantenimiento = Column(UUID(as_uuid=True), ForeignKey("INV_MANTENIMIENTO.MAN_Mantenimiento"), nullable=False)
     
     mantenimiento = relationship("Mantenimiento", back_populates="detalles")
@@ -101,7 +102,7 @@ class Evidencia(Base):
     EVI_Nombre_Archivo = Column(String(100), nullable=True)
     EVI_Tipo_MIME = Column(String(50), nullable=True)
 
-    # FKs Opcionales (XOR Lógico) con nombres completos
+    # FKs
     MOV_Movimiento_Ref = Column(UUID(as_uuid=True), ForeignKey("INV_MOVIMIENTO.MOV_Movimiento"), nullable=True)
     MAN_Mantenimiento_Ref = Column(UUID(as_uuid=True), ForeignKey("INV_MANTENIMIENTO.MAN_Mantenimiento"), nullable=True)
     

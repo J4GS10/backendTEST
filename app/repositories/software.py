@@ -60,13 +60,13 @@ class SoftwareRepository:
             .values(LIC_Cantidad_Usada=Licencia.LIC_Cantidad_Usada + 1)
         )
 
-    # --- INSTALACIONES ---
+ 
     async def create_instalacion(self, schema: InstalacionCreate) -> Instalacion:
         db_obj = Instalacion(**schema.model_dump())
         self.db.add(db_obj)
-        # No hacemos commit aquí, lo hará el servicio dentro de la transacción
+
         return db_obj
-    
+
     async def get_instalacion_existente(self, activo_id: uuid.UUID, licencia_id: int) -> Optional[Instalacion]:
         """Verifica si ya está instalada para no duplicar"""
         query = select(Instalacion).where(
@@ -76,3 +76,4 @@ class SoftwareRepository:
         )
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
+    

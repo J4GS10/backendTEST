@@ -10,6 +10,7 @@ class TipoActivo(Base):
 
     TAC_Tipo_Activo = Column(Integer, primary_key=True, index=True, autoincrement=True)
     TAC_Nombre = Column(String(100), unique=True, nullable=False) 
+    TAC_Prefijo = Column(String(10), nullable=True, unique=True)
     TAC_Aplica_Depreciacion = Column(Boolean, default=True)
 
     # CORRECCIÓN: Usamos path completo para evitar error de importación

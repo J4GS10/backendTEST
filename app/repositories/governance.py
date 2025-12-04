@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
 
-from app.models.governance import ConfiguracionSistema
+from app.models.governance import ConfiguracionSistema, Secuencia
 from app.schemas.governance import ConfigUpdate
 
 class GovernanceRepository:
@@ -38,3 +38,35 @@ class GovernanceRepository:
             await self.db.commit()
             
         return await self.get_config()
+
+    async def get_next_code(self, contexto: str, prefijo: str, relleno: int = 5) -> str:
+        """
+        Genera el siguiente código único (Ej: LPT00001).
+        Usa 'with_for_update()' para bloquear la fila y evitar duplicados en concurrencia.
+        """
+        # 1. Buscar y Bloquear
+        query = select(Secuencia).where(Secuencia.SEC_Contexto == contexto).with_for_update()
+        result = await self.db.execute(query)
+        secuencia = result.scalar_one_or_none()
+
+        if not secuencia:
+            # Si no existe la secuencia para este prefijo, la creamos desde 0
+            secuencia = Secuencia(
+                SEC_Contexto=contexto,
+                SEC_Ultimo_Numero=0,
+                SEC_Relleno=relleno
+            )
+            self.db.add(secuencia)
+            # Flush para obtener el ID y bloquear, aunque en insert el lock es implícito
+            await self.db.flush() 
+        
+        # 2. Incrementar
+        secuencia.SEC_Ultimo_Numero += 1
+        
+        # 3. Formatear
+        # Ejemplo: LPT + 00001
+        numero_str = str(secuencia.SEC_Ultimo_Numero).zfill(secuencia.SEC_Relleno)
+        codigo_final = f"{prefijo}{numero_str}"
+        
+        # El commit se hará en la capa de servicio superior
+        return codigo_final

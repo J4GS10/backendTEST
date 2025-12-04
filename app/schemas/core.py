@@ -8,8 +8,8 @@ from decimal import Decimal
 # ESPECIFICACIONES (EAV)
 # =======================
 class EspecificacionBase(BaseModel):
-    TES_Tipo_Especificacion: int # FK al catálogo (ej: ID de 'RAM')
-    ESP_Valor: str = Field(..., min_length=1, max_length=255, description="Valor real: 16GB")
+    TES_Tipo_Especificacion: int 
+    ESP_Valor: str = Field(..., min_length=1, max_length=255)
 
 class EspecificacionCreate(EspecificacionBase):
     pass
@@ -22,8 +22,8 @@ class EspecificacionResponse(EspecificacionBase):
 # ACTIVO (CORE)
 # =======================
 class ActivoBase(BaseModel):
-    ACT_Codigo_Interno: str = Field(..., min_length=3, max_length=50, description="Placa o Etiqueta de Inventario")
-    ACT_Serie_Fabricante: str = Field(..., min_length=3, max_length=100, description="Serial único del chasis")
+    ACT_Codigo_Interno: Optional[str] = Field(None, min_length=3, max_length=50) # Opcional en entrada por secuencia
+    ACT_Serie_Fabricante: str = Field(..., min_length=3, max_length=100)
     ACT_Hostname: Optional[str] = Field(None, max_length=100)
     
     ACT_Fecha_Compra: date
@@ -46,9 +46,19 @@ class ActivoCreate(ActivoBase):
     # Permitimos crear especificaciones junto con el activo (Nested Write)
     especificaciones: Optional[List[EspecificacionCreate]] = []
 
+class ActivoUpdate(BaseModel):
+    ACT_Codigo_Interno: Optional[str] = Field(None, min_length=3, max_length=50)
+    ACT_Serie_Fabricante: Optional[str] = Field(None, min_length=3, max_length=100)
+    ACT_Hostname: Optional[str] = Field(None, max_length=100)
+    ACT_Costo: Optional[Decimal] = Field(None, ge=0)
+    
+    MOD_Modelo: Optional[int] = None
+    TAC_Tipo_Activo: Optional[int] = None
+    EOP_Estado_Operativo: Optional[int] = None
+
 class ActivoResponse(ActivoBase):
     ACT_Activo: uuid.UUID
-    # Incluimos las specs en la respuesta para ver el objeto completo
+    # Incluimos las specs en la respuesta
     especificaciones: List[EspecificacionResponse] = []
     
     model_config = ConfigDict(from_attributes=True)
