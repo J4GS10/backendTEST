@@ -1,4 +1,5 @@
 from fastapi import HTTPException, status
+from app.core.errors import internal_error
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
@@ -11,10 +12,12 @@ from app.repositories.traceability import TraceabilityRepository
 
 from app.models.location import Area
 from app.models.organization import Persona
-from app.models.traceability import TipoMovimiento
+from app.models.traceability import TipoMovimiento, Movimiento
+from app.models.catalogs import EstadoOperativo
 
-from app.schemas.core import ActivoCreate, ActivoUpdate
+from app.schemas.core import ActivoCreate, ActivoUpdate, ActivoFilter
 from app.schemas.traceability import MovimientoCreate
+
 
 class CoreService:
     def __init__(self, db: AsyncSession):
@@ -24,74 +27,193 @@ class CoreService:
         self.gov_repo = GovernanceRepository(db)
         self.trace_repo = TraceabilityRepository(db)
 
-    async def create_activo(self, schema: ActivoCreate):
-        # 1. LÓGICA DE SECUENCIAS
-        if not schema.ACT_Codigo_Interno:
+    # =================================================================
+    # CREATE — ACID con auditoría
+    # =================================================================
+    async def create_activo(self, schema: ActivoCreate, usuario_id: uuid.UUID | None = None):
+        try:
+            # 1. VALIDACIONES DE FK
             tipo_activo = await self.cat_repo.get_tipo_activo_by_id(schema.TAC_Tipo_Activo)
-            
             if not tipo_activo:
                 raise HTTPException(status_code=404, detail="ASSET_TYPE_NOT_FOUND")
-            
-            if not tipo_activo.TAC_Prefijo:
-                raise HTTPException(status_code=400, detail="ASSET_TYPE_HAS_NO_PREFIX_CONFIGURED_FOR_AUTO_GENERATION")
-            
-            contexto_secuencia = f"ASSET_{tipo_activo.TAC_Prefijo}"
-            nuevo_codigo = await self.gov_repo.get_next_code(contexto=contexto_secuencia, prefijo=tipo_activo.TAC_Prefijo)
-            schema.ACT_Codigo_Interno = nuevo_codigo
 
-        # 2. VALIDACIONES DE INTEGRIDAD
-        if await self.repo.get_by_codigo_interno(schema.ACT_Codigo_Interno):
-            raise HTTPException(status_code=400, detail="ASSET_CODE_ALREADY_EXISTS")
-        
-        if await self.repo.get_by_serie(schema.ACT_Serie_Fabricante):
-            raise HTTPException(status_code=400, detail="SERIAL_NUMBER_ALREADY_EXISTS")
+            modelo = await self.cat_repo.get_modelo_by_id(schema.MOD_Modelo)
+            if not modelo:
+                raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
 
-        # 3. CREACIÓN
-        nuevo_activo = await self.repo.create_activo(schema)
+            estado = await self.cat_repo.get_estado_operativo_by_id(schema.EOP_Estado_Operativo)
+            if not estado:
+                raise HTTPException(status_code=404, detail="OPERATIONAL_STATUS_NOT_FOUND")
 
-        # 4. TRAZABILIDAD AUTOMÁTICA
-        q_tipo = select(TipoMovimiento).where(TipoMovimiento.TMO_Nombre.ilike("%Ingreso%"))
-        res_tipo = await self.db.execute(q_tipo)
-        tipo_mov = res_tipo.scalar_one_or_none()
-        
-        q_area = select(Area).where(Area.ARE_Nombre.ilike("%Bodega%"))
-        res_area = await self.db.execute(q_area)
-        area_bodega = res_area.scalar_one_or_none()
+            # 2. LÓGICA DE SECUENCIAS (Código Interno automático)
+            if not schema.ACT_Codigo_Interno:
+                if not tipo_activo.TAC_Prefijo:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="ASSET_TYPE_HAS_NO_PREFIX_CONFIGURED_FOR_AUTO_GENERATION"
+                    )
+                contexto_secuencia = f"ASSET_{tipo_activo.TAC_Prefijo}"
+                nuevo_codigo = await self.gov_repo.get_next_code(
+                    contexto=contexto_secuencia,
+                    prefijo=tipo_activo.TAC_Prefijo
+                )
+                schema.ACT_Codigo_Interno = nuevo_codigo
 
-        q_persona = select(Persona).limit(1)
-        res_persona = await self.db.execute(q_persona)
-        persona_resp = res_persona.scalar_one_or_none()
-
-        if tipo_mov and area_bodega and persona_resp:
-            movimiento_inicial = MovimientoCreate(
-                ACT_Activo=nuevo_activo.ACT_Activo,
-                PER_Persona=persona_resp.PER_Persona,
-                ARE_Area=area_bodega.ARE_Area,
-                TMO_Tipo_Movimiento=tipo_mov.TMO_Tipo_Movimiento,
-                MOV_Observacion="Alta inicial del activo en sistema (Automático)"
-            )
-            await self.trace_repo.create_movimiento_transactional(movimiento_inicial)
-            await self.db.commit()
-
-        return nuevo_activo
-
-    async def update_activo(self, activo_id: uuid.UUID, schema: ActivoUpdate):
-        # 1. Verificar existencia
-        activo_actual = await self.repo.get_by_id(activo_id)
-        if not activo_actual:
-            raise HTTPException(status_code=404, detail="ASSET_NOT_FOUND")
-
-        # 2. Validar colisión de Código
-        if schema.ACT_Codigo_Interno and schema.ACT_Codigo_Interno != activo_actual.ACT_Codigo_Interno:
+            # 3. VALIDACIONES DE UNICIDAD
             if await self.repo.get_by_codigo_interno(schema.ACT_Codigo_Interno):
-                raise HTTPException(status_code=400, detail="NEW_ASSET_CODE_ALREADY_EXISTS")
+                raise HTTPException(status_code=400, detail="ASSET_CODE_ALREADY_EXISTS")
 
-        # 3. Validar colisión de Serie
-        if schema.ACT_Serie_Fabricante and schema.ACT_Serie_Fabricante != activo_actual.ACT_Serie_Fabricante:
             if await self.repo.get_by_serie(schema.ACT_Serie_Fabricante):
-                raise HTTPException(status_code=400, detail="NEW_SERIAL_NUMBER_ALREADY_EXISTS")
+                raise HTTPException(status_code=400, detail="SERIAL_NUMBER_ALREADY_EXISTS")
 
-        return await self.repo.update_activo(activo_id, schema)
+            # 4. VALIDACIÓN DE NEGOCIO: Garantía >= Fecha Compra
+            if schema.ACT_Fin_Garantia and schema.ACT_Fin_Garantia < schema.ACT_Fecha_Compra:
+                raise HTTPException(
+                    status_code=400,
+                    detail="WARRANTY_DATE_CANNOT_BE_BEFORE_PURCHASE_DATE"
+                )
 
+            # 5. CREACIÓN
+            nuevo_activo = await self.repo.create_activo(schema)
+
+            # Nota: no creamos un movimiento "automático" de ingreso. El alta
+            # del activo NO implica asignación. Si se desea registrar quién
+            # recibe el activo en bodega, se hace explícitamente con
+            # POST /trazabilidad/movimientos.
+
+            # 7. AUDITORÍA
+            await self.gov_repo.create_audit_log(
+                accion="CREATE",
+                entidad="INV_ACTIVO",
+                snapshot={"codigo": schema.ACT_Codigo_Interno, "serie": schema.ACT_Serie_Fabricante},
+                usuario_id=usuario_id
+            )
+
+            # 8. COMMIT ATÓMICO
+            await self.db.commit()
+            return nuevo_activo
+
+        except HTTPException:
+            await self.db.rollback()
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
+
+    # =================================================================
+    # UPDATE — Con validaciones de colisión
+    # =================================================================
+    async def update_activo(self, activo_id: uuid.UUID, schema: ActivoUpdate, usuario_id: uuid.UUID | None = None):
+        try:
+            activo_actual = await self.repo.get_by_id(activo_id)
+            if not activo_actual:
+                raise HTTPException(status_code=404, detail="ASSET_NOT_FOUND")
+
+            # Validar FK de Modelo si se envía
+            if schema.MOD_Modelo is not None:
+                modelo = await self.cat_repo.get_modelo_by_id(schema.MOD_Modelo)
+                if not modelo:
+                    raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
+
+            # Validar FK de Estado Operativo si se envía
+            if schema.EOP_Estado_Operativo is not None:
+                estado = await self.cat_repo.get_estado_operativo_by_id(schema.EOP_Estado_Operativo)
+                if not estado:
+                    raise HTTPException(status_code=404, detail="OPERATIONAL_STATUS_NOT_FOUND")
+
+            # Validar colisión de Código
+            if schema.ACT_Codigo_Interno and schema.ACT_Codigo_Interno != activo_actual.ACT_Codigo_Interno:
+                if await self.repo.get_by_codigo_interno(schema.ACT_Codigo_Interno):
+                    raise HTTPException(status_code=400, detail="NEW_ASSET_CODE_ALREADY_EXISTS")
+
+            # Validar colisión de Serie
+            if schema.ACT_Serie_Fabricante and schema.ACT_Serie_Fabricante != activo_actual.ACT_Serie_Fabricante:
+                if await self.repo.get_by_serie(schema.ACT_Serie_Fabricante):
+                    raise HTTPException(status_code=400, detail="NEW_SERIAL_NUMBER_ALREADY_EXISTS")
+
+            resultado = await self.repo.update_activo(activo_id, schema)
+
+            # Auditoría
+            await self.gov_repo.create_audit_log(
+                accion="UPDATE",
+                entidad="INV_ACTIVO",
+                snapshot={"activo_id": str(activo_id), "cambios": schema.model_dump(exclude_unset=True)},
+                usuario_id=usuario_id
+            )
+            await self.db.commit()
+            return resultado
+
+        except HTTPException:
+            await self.db.rollback()
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
+
+    # =================================================================
+    # READ
+    # =================================================================
     async def list_activos(self, skip: int, limit: int):
         return await self.repo.get_all(skip, limit)
+
+    async def get_activo_detail(self, activo_id: uuid.UUID):
+        activo = await self.repo.get_by_id(activo_id)
+        if not activo:
+            raise HTTPException(status_code=404, detail="ASSET_NOT_FOUND")
+        return activo
+
+    async def search_activos(self, filters: ActivoFilter):
+        return await self.repo.search_activos(filters)
+
+    # =================================================================
+    # DELETE (Baja Lógica) — ACID con validaciones
+    # =================================================================
+    async def delete_activo(self, activo_id: uuid.UUID, usuario_id: uuid.UUID | None = None):
+        try:
+            activo = await self.repo.get_by_id_simple(activo_id)
+            if not activo:
+                raise HTTPException(status_code=404, detail="ASSET_NOT_FOUND")
+
+            # Verificar que NO esté asignado actualmente
+            q_check = select(Movimiento).where(
+                Movimiento.ACT_Activo == activo_id,
+                Movimiento.MOV_Fecha_Devolucion == None
+            )
+            res_check = await self.db.execute(q_check)
+            if res_check.first():
+                raise HTTPException(
+                    status_code=400,
+                    detail="CANNOT_DELETE_ASSIGNED_ASSET_RETURN_IT_FIRST"
+                )
+
+            # Buscar Estado "BAJA"
+            q_estado = select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike("Baja"))
+            res_estado = await self.db.execute(q_estado)
+            estado_baja = res_estado.scalar_one_or_none()
+
+            if not estado_baja:
+                raise HTTPException(
+                    status_code=500,
+                    detail="SYSTEM_CONFIGURATION_ERROR_MISSING_STATUS_BAJA"
+                )
+
+            # Soft Delete
+            update_schema = ActivoUpdate(EOP_Estado_Operativo=estado_baja.EOP_Estado_Operativo)
+            resultado = await self.repo.update_activo(activo_id, update_schema)
+
+            # Auditoría
+            await self.gov_repo.create_audit_log(
+                accion="DELETE_LOGIC",
+                entidad="INV_ACTIVO",
+                snapshot={"activo_id": str(activo_id), "codigo": activo.ACT_Codigo_Interno},
+                usuario_id=usuario_id
+            )
+            await self.db.commit()
+            return resultado
+
+        except HTTPException:
+            await self.db.rollback()
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")

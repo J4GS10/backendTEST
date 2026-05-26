@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, CheckConstraint
 from sqlalchemy.orm import relationship
 from app.db.base import Base
+
 
 # ==========================================
 # 1. TIPO DE ACTIVO
@@ -9,11 +10,10 @@ class TipoActivo(Base):
     __tablename__ = "INV_TIPO_ACTIVO"
 
     TAC_Tipo_Activo = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    TAC_Nombre = Column(String(100), unique=True, nullable=False) 
+    TAC_Nombre = Column(String(100), unique=True, nullable=False)
     TAC_Prefijo = Column(String(10), nullable=True, unique=True)
-    TAC_Aplica_Depreciacion = Column(Boolean, default=True)
+    TAC_Aplica_Depreciacion = Column(Boolean, default=True, nullable=False)
 
-    # CORRECCIÓN: Usamos path completo para evitar error de importación
     activos = relationship("app.models.core.Activo", back_populates="tipo_activo")
 
 
@@ -52,14 +52,27 @@ class Modelo(Base):
     MOD_Nombre = Column(String(150), nullable=False)
     MOD_Anio_Lanzamiento = Column(Integer, nullable=True)
 
-    MAR_Marca = Column(Integer, ForeignKey("INV_MARCA.MAR_Marca"), nullable=False)
-    TCN_Tipo_Conexion = Column(Integer, ForeignKey("INV_TIPO_CONEXION.TCN_Tipo_Conexion"), nullable=True)
+    MAR_Marca = Column(
+        Integer,
+        ForeignKey("INV_MARCA.MAR_Marca", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    TCN_Tipo_Conexion = Column(
+        Integer,
+        ForeignKey("INV_TIPO_CONEXION.TCN_Tipo_Conexion", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     marca = relationship("Marca", back_populates="modelos")
     tipo_conexion = relationship("TipoConexion", back_populates="modelos")
-    
-    # CORRECCIÓN: Path completo
     activos = relationship("app.models.core.Activo", back_populates="modelo")
+
+    __table_args__ = (
+        CheckConstraint(
+            '"MOD_Anio_Lanzamiento" IS NULL OR "MOD_Anio_Lanzamiento" BETWEEN 1970 AND 2100',
+            name="ck_modelo_anio_razonable",
+        ),
+    )
 
 
 # ==========================================
@@ -72,7 +85,6 @@ class EstadoOperativo(Base):
     EOP_Nombre = Column(String(50), unique=True, nullable=False)
     EOP_Descripcion = Column(String(200), nullable=True)
 
-    # CORRECCIÓN: Path completo
     activos = relationship("app.models.core.Activo", back_populates="estado_operativo")
 
 
@@ -86,4 +98,6 @@ class TipoEspecificacion(Base):
     TES_Nombre = Column(String(100), unique=True, nullable=False)
     TES_Unidad_Medida = Column(String(20), nullable=True)
 
-    especificaciones = relationship("app.models.core.Especificacion", back_populates="tipo_especificacion")
+    especificaciones = relationship(
+        "app.models.core.Especificacion", back_populates="tipo_especificacion"
+    )

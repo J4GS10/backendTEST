@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 from app.models.core import Activo
-from app.models.traceability import Movimiento
+from app.models.traceability import Mantenimiento, Movimiento
 from app.models.software import Licencia
 
 class StatsService:
@@ -25,11 +25,23 @@ class StatsService:
         res_lic = await self.db.execute(select(func.sum(Licencia.LIC_Cantidad_Total), func.sum(Licencia.LIC_Cantidad_Usada)))
         lic_total, lic_usadas = res_lic.one()
         
+        # 4. Tickets de mantenimiento abiertos
+        res_mant_open = await self.db.execute(
+            select(func.count()).select_from(Mantenimiento).where(Mantenimiento.MAN_Fecha_Cierre.is_(None))
+        )
+        mantenimientos_abiertos = res_mant_open.scalar() or 0
+
+        # 5. Total histórico de tickets
+        res_mant_total = await self.db.execute(select(func.count()).select_from(Mantenimiento))
+        mantenimientos_total = res_mant_total.scalar() or 0
+
         return {
             "activos_totales": total_activos or 0,
             "activos_asignados": total_asignados or 0,
             "activos_stock": (total_activos or 0) - (total_asignados or 0),
             "licencias_total": lic_total or 0,
             "licencias_usadas": lic_usadas or 0,
-            "licencias_disponibles": (lic_total or 0) - (lic_usadas or 0)
+            "licencias_disponibles": (lic_total or 0) - (lic_usadas or 0),
+            "mantenimientos_abiertos": mantenimientos_abiertos,
+            "mantenimientos_total": mantenimientos_total,
         }

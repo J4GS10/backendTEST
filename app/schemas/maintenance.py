@@ -11,6 +11,9 @@ class TipoMantenimientoBase(BaseModel):
 class TipoMantenimientoCreate(TipoMantenimientoBase):
     pass
 
+class TipoMantenimientoUpdate(BaseModel):
+    TMA_Nombre: Optional[str] = Field(None, min_length=3, max_length=50)
+
 class TipoMantenimientoResponse(TipoMantenimientoBase):
     TMA_Tipo_Mantenimiento: int
     model_config = ConfigDict(from_attributes=True)
@@ -39,16 +42,35 @@ class MantenimientoCreate(MantenimientoBase):
     # Lista opcional de acciones realizadas
     detalles: List[DetalleCreate] = []
 
+class MantenimientoCierre(BaseModel):
+    MAN_Costo_Total: Decimal = Field(..., ge=0)
+    MAN_Fecha_Cierre: Optional[datetime] = None
+
+
+class ActivoMantSummary(BaseModel):
+    ACT_Activo: uuid.UUID
+    ACT_Codigo_Interno: str
+    ACT_Hostname: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PersonaMantSummary(BaseModel):
+    PER_Persona: uuid.UUID
+    PER_Primer_Nombre: str
+    PER_Primer_Apellido: str
+    PER_Email_Corporativo: str
+    model_config = ConfigDict(from_attributes=True)
+
+
 class MantenimientoResponse(MantenimientoBase):
     MAN_Mantenimiento: uuid.UUID
     MAN_Fecha_Ingreso: datetime
     MAN_Fecha_Cierre: Optional[datetime] = None
-    
-    # Objetos anidados para mostrar nombres en tabla
+
+    # Relaciones cargadas
     tipo_mantenimiento: Optional[TipoMantenimientoResponse] = None
     detalles: List[DetalleResponse] = []
-    
-    # Resumen del activo
-    activo: Optional[object] = None 
+    activo: Optional[ActivoMantSummary] = None
+    persona_solicita: Optional[PersonaMantSummary] = None
 
     model_config = ConfigDict(from_attributes=True)

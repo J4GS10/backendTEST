@@ -1,51 +1,371 @@
-from fastapi import HTTPException, status
+"""Servicio de Trazabilidad: movimientos / asignaciones / transferencias."""
+from __future__ import annotations
+
+from app.core.errors import internal_error
+
+import uuid
+
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.catalogs import EstadoOperativo
+from app.models.location import Area
+from app.models.organization import Persona, Usuario
+from app.models.traceability import TipoMovimiento
+from app.repositories.core import CoreRepository
+from app.repositories.governance import GovernanceRepository
 from app.repositories.traceability import TraceabilityRepository
-from app.schemas.traceability import MovimientoCreate, TipoMovimientoCreate
+from app.schemas.traceability import (
+    DevolucionCreate,
+    MovimientoCreate,
+    TipoMovimientoCreate,
+    TipoMovimientoUpdate,
+    TransferenciaCreate,
+)
+
 
 class TraceabilityService:
     def __init__(self, db: AsyncSession):
+        self.db = db
         self.repo = TraceabilityRepository(db)
-        self.db = db  # Necesitamos acceso directo a la sesión para el COMMIT final
+        self.gov_repo = GovernanceRepository(db)
+        self.core_repo = CoreRepository(db)
 
-    async def create_tipo_movimiento(self, schema: TipoMovimientoCreate):
-        return await self.repo.create_tipo_movimiento(schema)
-    
+    # =====================================================================
+    # TIPO MOVIMIENTO
+    # =====================================================================
+    async def create_tipo_movimiento(self, schema: TipoMovimientoCreate, usuario_id=None, ip=None):
+        try:
+            existing = await self.db.execute(
+                select(TipoMovimiento).where(TipoMovimiento.TMO_Nombre.ilike(schema.TMO_Nombre))
+            )
+            if existing.scalar_one_or_none():
+                raise HTTPException(400, detail="MOVEMENT_TYPE_ALREADY_EXISTS")
+            obj = await self.repo.create_tipo_movimiento(schema)
+            await self.gov_repo.create_audit_log(
+                "CREATE", "INV_TIPO_MOVIMIENTO",
+                {"nombre": schema.TMO_Nombre},
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+            await self.db.refresh(obj)
+            return obj
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
+
     async def list_tipos_movimiento(self):
         return await self.repo.get_tipos_movimiento()
 
-    async def list_movimientos(self):
-        return await self.repo.get_all_movimientos()
+    async def update_tipo_movimiento(self, id: int, schema: TipoMovimientoUpdate, usuario_id=None, ip=None):
+        try:
+            tipo = await self.repo.get_tipo_by_id(id)
+            if not tipo:
+                raise HTTPException(404, detail="MOVEMENT_TYPE_NOT_FOUND")
+            obj = await self.repo.update_tipo(id, schema)
+            await self.gov_repo.create_audit_log(
+                "UPDATE", "INV_TIPO_MOVIMIENTO",
+                {"id": id, "cambios": schema.model_dump(exclude_unset=True)},
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+            return obj
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
 
-    async def registrar_movimiento(self, schema: MovimientoCreate):
+    async def delete_tipo_movimiento(self, id: int, usuario_id=None, ip=None):
+        try:
+            tipo = await self.repo.get_tipo_by_id(id)
+            if not tipo:
+                raise HTTPException(404, detail="MOVEMENT_TYPE_NOT_FOUND")
+            count = await self.repo.count_movimientos_by_tipo(id)
+            if count > 0:
+                raise HTTPException(409, detail="CANNOT_DELETE_TYPE_HAS_MOVEMENTS")
+            await self.repo.delete_tipo(id)
+            await self.gov_repo.create_audit_log(
+                "DELETE", "INV_TIPO_MOVIMIENTO",
+                {"id": id, "nombre": tipo.TMO_Nombre},
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
+
+    # =====================================================================
+    # MOVIMIENTOS — ACID
+    # =====================================================================
+    async def list_movimientos(self, skip: int = 0, limit: int = 50):
+        return await self.repo.get_all_movimientos(skip, limit)
+
+    async def registrar_movimiento(
+        self,
+        schema: MovimientoCreate,
+        usuario_id: uuid.UUID | None = None,
+        ip: str | None = None,
+    ):
         """
-        Lógica ACID Transaccional:
-        1. Buscar si el activo ya está asignado.
-        2. Si sí, cerrar esa asignación anterior.
-        3. Crear la nueva asignación.
-        4. Commit atómico.
-        5. Recarga completa de relaciones (Fix MissingGreenlet).
+        Asigna activo a persona/área. Lock + UPDATE condicional aseguran
+        que no queden dos movimientos abiertos para el mismo activo.
         """
         try:
+            activo = await self.core_repo.get_by_id_simple(schema.ACT_Activo)
+            if not activo:
+                raise HTTPException(404, detail="ASSET_NOT_FOUND")
 
-            movimiento_vigente = await self.repo.get_movimiento_vigente(schema.ACT_Activo)
+            # Validar estado != Baja
+            q_baja = select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike("Baja"))
+            estado_baja = (await self.db.execute(q_baja)).scalar_one_or_none()
+            if estado_baja and activo.EOP_Estado_Operativo == estado_baja.EOP_Estado_Operativo:
+                raise HTTPException(400, detail="CANNOT_ASSIGN_DECOMMISSIONED_ASSET")
 
-            if movimiento_vigente:
-                await self.repo.cerrar_movimiento(movimiento_vigente.MOV_Movimiento)
- 
-            nuevo_movimiento = await self.repo.create_movimiento_transactional(schema)
+            # Persona y Área
+            persona = (await self.db.execute(
+                select(Persona).where(Persona.PER_Persona == schema.PER_Persona)
+            )).scalar_one_or_none()
+            if not persona:
+                raise HTTPException(404, detail="PERSON_NOT_FOUND")
+
+            area = (await self.db.execute(
+                select(Area).where(Area.ARE_Area == schema.ARE_Area)
+            )).scalar_one_or_none()
+            if not area:
+                raise HTTPException(404, detail="AREA_NOT_FOUND")
+
+            # Lock + cierre del movimiento vigente, si existe
+            vigente = await self.repo.get_movimiento_vigente(schema.ACT_Activo, lock=True)
+            if vigente:
+                await self.repo.cerrar_movimiento(vigente.MOV_Movimiento)
+
+            nuevo = await self.repo.create_movimiento(schema)
+
+            await self.gov_repo.create_audit_log(
+                "ASSIGN", "INV_MOVIMIENTO",
+                {
+                    "activo": str(schema.ACT_Activo),
+                    "persona": str(schema.PER_Persona),
+                    "area": schema.ARE_Area,
+                },
+                usuario_id=usuario_id, ip_origen=ip,
+            )
 
             await self.db.commit()
-
-            movimiento_completo = await self.repo.get_by_id_full(nuevo_movimiento.MOV_Movimiento)
-            
-            return movimiento_completo
-
+            return await self.repo.get_by_id_full(nuevo.MOV_Movimiento)
+        except HTTPException:
+            await self.db.rollback(); raise
         except Exception as e:
-            await self.db.rollback() 
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
 
-            if isinstance(e, HTTPException):
-                raise e
+    async def asignaciones_vigentes_persona(self, persona_id: uuid.UUID):
+        """Lista los activos actualmente bajo custodia de una persona."""
+        persona = (await self.db.execute(
+            select(Persona).where(Persona.PER_Persona == persona_id)
+        )).scalar_one_or_none()
+        if not persona:
+            raise HTTPException(404, "PERSON_NOT_FOUND")
+        return await self.repo.get_asignaciones_vigentes_persona(persona_id)
 
-            raise HTTPException(status_code=500, detail=f"TRANSACTION_FAILED: {str(e)}")
+    async def offboarding_persona(
+        self,
+        persona_id: uuid.UUID,
+        desactivar_usuario: bool = True,
+        usuario_id: uuid.UUID | None = None,
+        ip: str | None = None,
+    ):
+        """
+        OFFBOARDING ATÓMICO + IDEMPOTENTE:
+        Llamarlo dos veces sobre la misma persona NO falla. Devuelve el estado
+        actual (movimientos cerrados, usuario desactivado, persona inactiva).
+        Solo aplica cambios y audita si quedan acciones por hacer.
+        """
+        try:
+            persona = (await self.db.execute(
+                select(Persona).where(Persona.PER_Persona == persona_id)
+            )).scalar_one_or_none()
+            if not persona:
+                raise HTTPException(404, "PERSON_NOT_FOUND")
+
+            # 1. Capturar lista de activos antes de cerrar (para snapshot)
+            vigentes = await self.repo.get_asignaciones_vigentes_persona(persona_id)
+            activos_ids = [str(m.ACT_Activo) for m in vigentes]
+
+            # 2. Cerrar todos los movimientos en un solo UPDATE
+            cerrados = await self.repo.cerrar_todos_movimientos_persona(persona_id)
+
+            # 3. Cambiar estado operativo a "En Bodega" (si existe)
+            estado_bodega = (await self.db.execute(
+                select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike("%Bodega%"))
+            )).scalar_one_or_none()
+            if estado_bodega and activos_ids:
+                from sqlalchemy import update as sql_update
+                from app.models.core import Activo
+                await self.db.execute(
+                    sql_update(Activo)
+                    .where(Activo.ACT_Activo.in_([m.ACT_Activo for m in vigentes]))
+                    .values(EOP_Estado_Operativo=estado_bodega.EOP_Estado_Operativo)
+                )
+
+            # 4. Desactivar usuario si aplica
+            usuario_desactivado = False
+            if desactivar_usuario:
+                usuario_target = (await self.db.execute(
+                    select(Usuario).where(Usuario.PER_Persona == persona_id)
+                )).scalar_one_or_none()
+                if usuario_target:
+                    if usuario_target.USU_Rol == "SUPER_ADMIN":
+                        # Proteger último super admin
+                        from sqlalchemy import func as sql_func
+                        count_sa = (await self.db.execute(
+                            select(sql_func.count()).select_from(Usuario)
+                            .where(Usuario.USU_Rol == "SUPER_ADMIN", Usuario.USU_Estado.is_(True))
+                        )).scalar() or 0
+                        if count_sa <= 1:
+                            raise HTTPException(
+                                400, "CANNOT_OFFBOARD_LAST_SUPER_ADMIN"
+                            )
+                    usuario_target.USU_Estado = False
+                    # Revocar todos los tokens
+                    from datetime import datetime as _dt, timezone as _tz
+                    far = _dt.now(_tz.utc).replace(tzinfo=None).replace(year=_dt.now().year + 1)
+                    await self.gov_repo.revoke_all_user_tokens(usuario_target.USU_Usuario, expira=far)
+                    usuario_desactivado = True
+
+            # 5. Marcar persona como inactiva
+            persona.PER_Estado = False
+
+            # 6. Idempotencia: solo auditamos si hubo cambios reales.
+            #    Si la persona ya estaba inactiva, sin movimientos, sin usuario activo,
+            #    no agregamos ruido en el audit log.
+            algo_cambio = (
+                cerrados > 0
+                or usuario_desactivado
+                or persona.PER_Estado is True  # antes era True, ahora False
+            )
+
+            if algo_cambio:
+                await self.gov_repo.create_audit_log(
+                    accion="OFFBOARDING",
+                    entidad="INV_PERSONA",
+                    snapshot={
+                        "persona_id": str(persona_id),
+                        "nombre": f"{persona.PER_Primer_Nombre} {persona.PER_Primer_Apellido}",
+                        "email": persona.PER_Email_Corporativo,
+                        "activos_devueltos": len(vigentes),
+                        "activos_ids": activos_ids,
+                        "usuario_desactivado": usuario_desactivado,
+                        "movimientos_cerrados": cerrados,
+                    },
+                    usuario_id=usuario_id,
+                    ip_origen=ip,
+                )
+
+            await self.db.commit()
+            return {
+                "status": "success",
+                "persona_id": str(persona_id),
+                "movimientos_cerrados": cerrados,
+                "activos_devueltos_a_bodega": len(activos_ids),
+                "usuario_desactivado": usuario_desactivado,
+                "persona_inactivada": True,
+                "idempotent_noop": not algo_cambio,
+            }
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "OFFBOARDING_FAILED")
+
+    async def registrar_devolucion(
+        self,
+        schema: DevolucionCreate,
+        usuario_id: uuid.UUID | None = None,
+        ip: str | None = None,
+    ):
+        try:
+            vigente = await self.repo.get_movimiento_vigente(schema.ACT_Activo, lock=True)
+            if not vigente:
+                raise HTTPException(400, detail="ASSET_IS_NOT_ASSIGNED")
+
+            cerrado = await self.repo.cerrar_movimiento(vigente.MOV_Movimiento)
+            if not cerrado:
+                # Otro proceso lo cerró antes.
+                raise HTTPException(409, detail="MOVEMENT_ALREADY_CLOSED")
+
+            await self.gov_repo.create_audit_log(
+                "RETURN", "INV_MOVIMIENTO",
+                {"activo": str(schema.ACT_Activo)},
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+            return {"status": "success", "message": "ASSET_RETURNED_SUCCESSFULLY"}
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
+
+    async def registrar_transferencia(
+        self,
+        schema: TransferenciaCreate,
+        usuario_id: uuid.UUID | None = None,
+        ip: str | None = None,
+    ):
+        try:
+            vigente = await self.repo.get_movimiento_vigente(schema.ACT_Activo, lock=True)
+            if not vigente:
+                raise HTTPException(400, detail="ASSET_IS_NOT_ASSIGNED_CANNOT_TRANSFER")
+
+            persona = (await self.db.execute(
+                select(Persona).where(Persona.PER_Persona == schema.PER_Persona_Destino)
+            )).scalar_one_or_none()
+            if not persona:
+                raise HTTPException(404, detail="DESTINATION_PERSON_NOT_FOUND")
+
+            area = (await self.db.execute(
+                select(Area).where(Area.ARE_Area == schema.ARE_Area_Destino)
+            )).scalar_one_or_none()
+            if not area:
+                raise HTTPException(404, detail="DESTINATION_AREA_NOT_FOUND")
+
+            tipo_mov = (await self.db.execute(
+                select(TipoMovimiento).where(TipoMovimiento.TMO_Nombre.ilike("%Asignación%"))
+            )).scalar_one_or_none()
+            if not tipo_mov:
+                raise HTTPException(500, detail="SYSTEM_CONFIG_ERROR_MISSING_ASSIGNMENT_TYPE")
+
+            await self.repo.cerrar_movimiento(vigente.MOV_Movimiento)
+
+            nuevo_mov = MovimientoCreate(
+                ACT_Activo=schema.ACT_Activo,
+                PER_Persona=schema.PER_Persona_Destino,
+                ARE_Area=schema.ARE_Area_Destino,
+                TMO_Tipo_Movimiento=tipo_mov.TMO_Tipo_Movimiento,
+                MOV_Observacion=schema.MOV_Observacion or "Transferencia de custodia",
+            )
+            created = await self.repo.create_movimiento(nuevo_mov)
+
+            await self.gov_repo.create_audit_log(
+                "TRANSFER", "INV_MOVIMIENTO",
+                {
+                    "activo": str(schema.ACT_Activo),
+                    "de_persona": str(vigente.PER_Persona),
+                    "a_persona": str(schema.PER_Persona_Destino),
+                },
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+            return await self.repo.get_by_id_full(created.MOV_Movimiento)
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")

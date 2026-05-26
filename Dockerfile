@@ -1,32 +1,56 @@
-# Usamos una imagen oficial ligera de Python 3.11
-FROM python:3.11-slim
+# =========================================================================
+# Imagen de PRODUCCIÓN — multi-stage, sin --reload, usuario no-root
+# =========================================================================
 
-# Evita que Python genere archivos .pyc y fuerza logs en tiempo real
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# --------- Stage 1: builder ---------
+FROM python:3.11-slim AS builder
 
-# Directorio de trabajo dentro del contenedor
-WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Instalamos dependencias del sistema necesarias para compilar
+WORKDIR /build
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+    build-essential \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiamos primero los requerimientos para aprovechar la caché de Docker
 COPY requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Instalamos las librerías de Python
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiamos el resto del código
-COPY . .
+# --------- Stage 2: runtime ---------
+FROM python:3.11-slim AS runtime
 
-# Exponemos el puerto 8000 (donde corre FastAPI)
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/home/appuser/.local/bin:$PATH
+
+# Librería runtime de Postgres (no build tools)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1001 -s /bin/bash appuser
+
+WORKDIR /app
+
+# Copiamos dependencias del builder
+COPY --from=builder /root/.local /home/appuser/.local
+
+COPY --chown=appuser:appuser . .
+
+# Permisos de ejecución para el entrypoint
+RUN chmod +x /app/entrypoint.sh
+
+USER appuser
+
 EXPOSE 8000
 
-# Comando para iniciar la aplicación
-# --host 0.0.0.0 permite acceso desde fuera del contenedor
-# --reload habilita reinicio automático al detectar cambios (solo dev)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:8000/health || exit 1
+
+# Aplica migraciones + bootstrap + arranca gunicorn.
+ENTRYPOINT ["/app/entrypoint.sh"]

@@ -62,3 +62,17 @@ class ActivoResponse(ActivoBase):
     especificaciones: List[EspecificacionResponse] = []
     
     model_config = ConfigDict(from_attributes=True)
+
+class ActivoDetailResponse(ActivoResponse):
+    # Incluye relaciones adicionales para la vista de detalle
+    pass  # Por ahora igual, pero preparado para expansión (ej. historial)
+
+class ActivoFilter(BaseModel):
+    q: Optional[str] = Field(None, description="Búsqueda combinada en código, serie, hostname")
+    modelo_id: Optional[int] = None
+    tipo_activo_id: Optional[int] = None
+    estado_operativo_id: Optional[int] = None
+    fecha_compra_start: Optional[date] = None
+    fecha_compra_end: Optional[date] = None
+    page: int = Field(1, ge=1, description="Página 1-indexed")
+    per_page: int = Field(20, ge=1, le=200, description="Tamaño de página, máximo 200")

@@ -34,7 +34,7 @@ async def seed_data():
         persona_pedro = Persona(PER_Primer_Nombre="Pedro", PER_Primer_Apellido="Gomez", PER_Email_Corporativo="pedro@test.com", DEP_Departamento=depto.DEP_Departamento, CAR_Cargo=cargo.CAR_Cargo)
         db.add_all([persona_juan, persona_pedro]); await db.flush()
 
-        usuario = Usuario(USU_Username="admin", USU_Password_Hash=get_password_hash("admin123"), USU_Salt="auto", USU_Rol="SUPER_ADMIN", PER_Persona=persona_juan.PER_Persona)
+        usuario = Usuario(USU_Username="admin", USU_Password_Hash=get_password_hash("admin123"), USU_Rol="SUPER_ADMIN", PER_Persona=persona_juan.PER_Persona)
         db.add(usuario)
 
         # --- 3. UBICACIÓN ---

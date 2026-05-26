@@ -1,16 +1,52 @@
-# .gitignore
-# Excluir archivos compilados de Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
 
-# Excluir entornos virtuales locales (si usas venv fuera de docker)
+# Entornos virtuales
 venv/
 env/
-
-# Excluir variables de entorno (SEGURIDAD CRÍTICA)
+.venv/
 .env
+.env.*
+!.env.example
 
-# Excluir base de datos local y archivos de sistema
+# Bases de datos locales
+*.db
+*.sqlite
+*.sqlite3
+inventario.db
+
+# Logs
+*.log
+logs/
+logs.txt
+bootstrap.log
+bootstrap_error.log
+
+# Sistema
 .DS_Store
+Thumbs.db
+
+# Docker
 postgres_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Migraciones temporales / dumps
+*.sql.bak
+*.dump

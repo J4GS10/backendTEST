@@ -12,6 +12,12 @@ class TipoActivoBase(BaseModel):
 class TipoActivoCreate(TipoActivoBase):
     pass
 
+class TipoActivoUpdate(BaseModel):
+    TAC_Nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+    TAC_Prefijo: Optional[str] = Field(None, max_length=10)
+    TAC_Aplica_Depreciacion: Optional[bool] = None
+
+
 class TipoActivoResponse(TipoActivoBase):
     TAC_Tipo_Activo: int
     model_config = ConfigDict(from_attributes=True)
@@ -24,6 +30,10 @@ class MarcaBase(BaseModel):
 
 class MarcaCreate(MarcaBase):
     pass
+
+class MarcaUpdate(BaseModel):
+    MAR_Nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+
 
 class MarcaResponse(MarcaBase):
     MAR_Marca: int
@@ -38,6 +48,11 @@ class TipoConexionBase(BaseModel):
 
 class TipoConexionCreate(TipoConexionBase):
     pass
+
+class TipoConexionUpdate(BaseModel):
+    TCN_Nombre: Optional[str] = Field(None, min_length=2, max_length=50)
+    TCN_Descripcion: Optional[str] = None
+
 
 class TipoConexionResponse(TipoConexionBase):
     TCN_Tipo_Conexion: int
@@ -57,8 +72,31 @@ class ModeloBase(BaseModel):
 class ModeloCreate(ModeloBase):
     pass
 
+class ModeloUpdate(BaseModel):
+    MOD_Nombre: Optional[str] = Field(None, min_length=2, max_length=150)
+    MOD_Anio_Lanzamiento: Optional[int] = None
+    MAR_Marca: Optional[int] = None
+    TCN_Tipo_Conexion: Optional[int] = None
+
+
 class ModeloResponse(ModeloBase):
     MOD_Modelo: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ModeloFlatResponse(BaseModel):
+    """Modelo con marca embebida (plano), pensado para selects del frontend."""
+    MOD_Modelo: int
+    MOD_Nombre: str
+    MAR_Marca: int
+    MAR_Nombre: str
+    TCN_Tipo_Conexion: Optional[int] = None
+    MOD_Anio_Lanzamiento: Optional[int] = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.MAR_Nombre} {self.MOD_Nombre}"
+
     model_config = ConfigDict(from_attributes=True)
 
 # =======================
@@ -70,6 +108,11 @@ class EstadoOperativoBase(BaseModel):
 
 class EstadoOperativoCreate(EstadoOperativoBase):
     pass
+
+class EstadoOperativoUpdate(BaseModel):
+    EOP_Nombre: Optional[str] = Field(None, min_length=2, max_length=50)
+    EOP_Descripcion: Optional[str] = None
+
 
 class EstadoOperativoResponse(EstadoOperativoBase):
     EOP_Estado_Operativo: int
@@ -84,6 +127,11 @@ class TipoEspecificacionBase(BaseModel):
 
 class TipoEspecificacionCreate(TipoEspecificacionBase):
     pass
+
+class TipoEspecificacionUpdate(BaseModel):
+    TES_Nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+    TES_Unidad_Medida: Optional[str] = Field(None, max_length=20)
+
 
 class TipoEspecificacionResponse(TipoEspecificacionBase):
     TES_Tipo_Especificacion: int

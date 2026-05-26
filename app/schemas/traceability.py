@@ -12,6 +12,9 @@ class TipoMovimientoBase(BaseModel):
 class TipoMovimientoCreate(TipoMovimientoBase):
     pass
 
+class TipoMovimientoUpdate(BaseModel):
+    TMO_Nombre: Optional[str] = Field(None, min_length=3, max_length=50)
+
 class TipoMovimientoResponse(TipoMovimientoBase):
     TMO_Tipo_Movimiento: int
     model_config = ConfigDict(from_attributes=True)
@@ -57,6 +60,21 @@ class MovimientoResponse(MovimientoBase):
     area: Optional[AreaSummary] = None
     
     model_config = ConfigDict(from_attributes=True)
+
+# =======================
+# DEVOLUCIÓN
+# =======================
+class DevolucionCreate(BaseModel):
+    ACT_Activo: uuid.UUID
+
+# =======================
+# TRANSFERENCIA
+# =======================
+class TransferenciaCreate(BaseModel):
+    ACT_Activo: uuid.UUID
+    PER_Persona_Destino: uuid.UUID
+    ARE_Area_Destino: int
+    MOV_Observacion: Optional[str] = None
 
 # Request para descarga por lote
 class ActaLoteRequest(BaseModel):

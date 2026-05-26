@@ -11,6 +11,10 @@ class PaisBase(BaseModel):
 class PaisCreate(PaisBase):
     pass
 
+class PaisUpdate(BaseModel):
+    PAI_Nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+    PAI_Codigo_ISO: Optional[str] = Field(None, min_length=2, max_length=5)
+
 class PaisResponse(PaisBase):
     PAI_Pais: int
     model_config = ConfigDict(from_attributes=True)
@@ -25,6 +29,9 @@ class EstadoBase(BaseModel):
 class EstadoCreate(EstadoBase):
     pass
 
+class EstadoUpdate(BaseModel):
+    EST_Nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+
 class EstadoResponse(EstadoBase):
     EST_Estado: int
     model_config = ConfigDict(from_attributes=True)
@@ -38,6 +45,9 @@ class MunicipioBase(BaseModel):
 
 class MunicipioCreate(MunicipioBase):
     pass
+
+class MunicipioUpdate(BaseModel):
+    MUN_Nombre: Optional[str] = Field(None, min_length=2, max_length=100)
 
 class MunicipioResponse(MunicipioBase):
     MUN_Municipio: int
@@ -55,6 +65,11 @@ class SedeBase(BaseModel):
 class SedeCreate(SedeBase):
     pass
 
+class SedeUpdate(BaseModel):
+    SED_Nombre: Optional[str] = Field(None, min_length=3, max_length=150)
+    SED_Direccion_Calle: Optional[str] = None
+    SED_Direccion_Numero: Optional[str] = None
+
 class SedeResponse(SedeBase):
     SED_Sede: int
     model_config = ConfigDict(from_attributes=True)
@@ -68,6 +83,9 @@ class EdificioBase(BaseModel):
 
 class EdificioCreate(EdificioBase):
     pass
+
+class EdificioUpdate(BaseModel):
+    EDI_Nombre: Optional[str] = Field(None, min_length=1, max_length=100)
 
 class EdificioResponse(EdificioBase):
     EDI_Edificio: int
@@ -84,6 +102,10 @@ class NivelBase(BaseModel):
 class NivelCreate(NivelBase):
     pass
 
+class NivelUpdate(BaseModel):
+    NIV_Numero_Piso: Optional[str] = Field(None, min_length=1, max_length=50)
+    NIV_Alias: Optional[str] = None
+
 class NivelResponse(NivelBase):
     NIV_Nivel: int
     model_config = ConfigDict(from_attributes=True)
@@ -99,6 +121,11 @@ class AreaBase(BaseModel):
 
 class AreaCreate(AreaBase):
     pass
+
+class AreaUpdate(BaseModel):
+    ARE_Nombre: Optional[str] = Field(None, min_length=2, max_length=150)
+    ARE_Tipo_Acceso: Optional[str] = None
+    ARE_Descripcion: Optional[str] = None
 
 class AreaResponse(AreaBase):
     ARE_Area: int
