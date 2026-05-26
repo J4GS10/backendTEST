@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_client_ip, require_super_admin
+from app.core.limiter import limiter
 from app.db.session import get_db
 from app.schemas.governance import AuditoriaList, ConfigResponse, ConfigUpdate
 from app.services.governance import GovernanceService
@@ -22,8 +23,12 @@ def get_service(db: AsyncSession = Depends(get_db)) -> GovernanceService:
 
 # ================= CONFIG =================
 @router.get("/config", response_model=ConfigResponse)
-async def get_config(service: GovernanceService = Depends(get_service)):
-    """Configuración pública (logo, colores) — accesible sin login para la pantalla de login."""
+@limiter.limit("30/minute")
+async def get_config(request: Request, service: GovernanceService = Depends(get_service)):
+    """
+    Configuración pública (logo, colores) — accesible sin login para la pantalla
+    de login. Rate-limit por IP para frenar scraping/fingerprinting masivo.
+    """
     return await service.get_public_config()
 
 
@@ -69,7 +74,9 @@ async def list_auditoria(
 
 
 @router.get("/auditoria/resumen", dependencies=SUPER)
+@limiter.limit("10/minute")
 async def auditoria_resumen(
+    request: Request,
     from_date: Optional[datetime] = Query(None, description="ISO timestamp inicial"),
     to_date: Optional[datetime] = Query(None, description="ISO timestamp final"),
     service: GovernanceService = Depends(get_service),

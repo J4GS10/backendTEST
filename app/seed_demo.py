@@ -39,6 +39,15 @@ log = logging.getLogger("seed")
 
 
 async def seed_demo() -> None:
+    # SECURITY: bloquear seed en producción. Carga usuarios con password fija
+    # `Lombardi#2026` que se loguea — sería game-over si arranca en prod.
+    from app.core.config import settings
+    if settings.ENVIRONMENT == "production":
+        log.error(
+            "seed_demo ABORTADO: ENVIRONMENT=production. "
+            "El seed crea usuarios con passwords conocidas. Refuse to run."
+        )
+        raise SystemExit(1)
     async with SessionLocal() as db:
         # Idempotencia: si ya hay catálogos cargados, omite
         count = (await db.execute(select(func.count()).select_from(Marca))).scalar() or 0

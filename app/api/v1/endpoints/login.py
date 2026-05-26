@@ -109,6 +109,7 @@ async def refresh_access_token(
 
 
 @router.post("/login/logout", status_code=204)
+@limiter.limit("10/minute")
 async def logout(
     current_user: CurrentUser,
     request: Request,
@@ -184,8 +185,16 @@ async def change_my_password(
     - Aplica la política de contraseñas configurada.
     - Revoca TODOS los tokens del usuario (incluido el actual) → debe re-login.
     """
-    # 1. Re-validar contraseña actual
+    # 1. Re-validar contraseña actual. Si falla, sumar al contador de fallos
+    # del usuario y aplicar lockout (igual que /login/access-token), para que
+    # un atacante con un token robado no pueda iterar passwords libremente.
     if not security.verify_password(current_password, current_user.USU_Password_Hash):
+        current_user.USU_Intentos_Fallidos = (current_user.USU_Intentos_Fallidos or 0) + 1
+        if current_user.USU_Intentos_Fallidos >= settings.ACCOUNT_LOCKOUT_THRESHOLD:
+            current_user.USU_Bloqueado_Hasta = _now() + timedelta(
+                minutes=settings.ACCOUNT_LOCKOUT_MINUTES
+            )
+        await db.commit()
         raise HTTPException(status_code=400, detail="INCORRECT_CURRENT_PASSWORD")
 
     # 2. Aplicar política

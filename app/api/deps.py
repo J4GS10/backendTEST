@@ -186,10 +186,18 @@ class PaginationParams:
 # CONTEXTO DE REQUEST (para auditoría)
 # =========================================================================
 def get_client_ip(request: Request) -> str | None:
-    # Respetar X-Forwarded-For si viene detrás de un proxy/lb confiable.
+    """
+    IP real para auditoría. Misma política que el rate-limiter
+    (ver `app/core/limiter.py`) — X-Real-IP > último hop de XFF > peer.
+    """
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
-        return fwd.split(",")[0].strip()
+        parts = [p.strip() for p in fwd.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else None
 
 

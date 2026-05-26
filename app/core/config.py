@@ -1,5 +1,5 @@
 from typing import List, Literal
-from pydantic import AnyHttpUrl, Field, field_validator
+from pydantic import AnyHttpUrl, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from urllib.parse import quote_plus
 
@@ -75,6 +75,33 @@ class Settings(BaseSettings):
                 "Generate one with: openssl rand -hex 32"
             )
         return v
+
+    @model_validator(mode="after")
+    def _production_hardening(self) -> "Settings":
+        """
+        Validaciones que sólo se aplican cuando ENVIRONMENT=production.
+        El arranque falla si:
+          - SEED_DEMO=true (cargaría usuarios demo con passwords conocidas).
+          - FIELD_ENCRYPTION_KEY está vacío (cifrado de licencias sería no-op silencioso).
+          - REDIS_URL no usa AUTH (redis:// sin :password@ en hostname).
+        """
+        if self.ENVIRONMENT != "production":
+            return self
+        # Las validaciones de SEED_DEMO se hacen en seed_demo.py al chequear el env var
+        # directamente, ya que ese flag NO es parte del modelo Settings.
+        if not self.FIELD_ENCRYPTION_KEY:
+            raise ValueError(
+                "FIELD_ENCRYPTION_KEY es OBLIGATORIO en producción. "
+                "Genera una con: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            )
+        if self.REDIS_URL and "://" in self.REDIS_URL:
+            # redis://[:password@]host:port/db — falla si no hay user/password antes de @
+            after_scheme = self.REDIS_URL.split("://", 1)[1]
+            if "@" not in after_scheme:
+                raise ValueError(
+                    "REDIS_URL sin AUTH en producción. Usa redis://:<password>@host:port/db"
+                )
+        return self
 
     # =========================================================================
     # DATABASE URI

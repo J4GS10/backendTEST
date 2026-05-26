@@ -106,11 +106,15 @@ class CoreRepository:
         conditions = []
         
         if filters.q:
-            search_term = f"%{filters.q}%"
+            # Escape de wildcards LIKE para que el usuario no construya patrones
+            # patológicos (`%_%_%_...`) ni metacaracteres. ilike usa `\\` como
+            # escape por defecto en PostgreSQL.
+            safe_q = filters.q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            search_term = f"%{safe_q}%"
             conditions.append(
-                (Activo.ACT_Codigo_Interno.ilike(search_term)) | 
-                (Activo.ACT_Hostname.ilike(search_term)) | 
-                (Activo.ACT_Serie_Fabricante.ilike(search_term))
+                (Activo.ACT_Codigo_Interno.ilike(search_term, escape="\\")) |
+                (Activo.ACT_Hostname.ilike(search_term, escape="\\")) |
+                (Activo.ACT_Serie_Fabricante.ilike(search_term, escape="\\"))
             )
         
         if filters.modelo_id:

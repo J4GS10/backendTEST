@@ -148,7 +148,7 @@ async def list_modelos(
 
 @router.get("/modelos-flat", response_model=List[ModeloFlatResponse])
 async def list_modelos_flat(
-    q: str | None = Query(None, description="Filtro por nombre de modelo o marca"),
+    q: str | None = Query(None, max_length=64, description="Filtro por nombre de modelo o marca"),
     limit: int = Query(500, ge=1, le=1000),
     service: CatalogService = Depends(get_service),
 ):

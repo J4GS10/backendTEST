@@ -179,9 +179,12 @@ class CatalogRepository:
             .limit(limit)
         )
         if q:
-            like = f"%{q}%"
+            # Escape de wildcards LIKE para frenar patrones patológicos del usuario.
+            safe_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{safe_q}%"
             query = query.where(
-                (Modelo.MOD_Nombre.ilike(like)) | (Marca.MAR_Nombre.ilike(like))
+                (Modelo.MOD_Nombre.ilike(like, escape="\\"))
+                | (Marca.MAR_Nombre.ilike(like, escape="\\"))
             )
         rows = (await self.db.execute(query)).all()
         return [

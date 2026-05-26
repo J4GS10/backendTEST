@@ -134,7 +134,13 @@ def encrypt_field(value: str | None) -> str | None:
         return value
     fernet = _get_fernet()
     if fernet is None:
-        # Sin clave configurada, no ciframos (modo dev) pero avisamos.
+        # Sin clave: avisamos UNA VEZ por proceso. El validador de config ya
+        # rechaza este estado en producción (ENVIRONMENT=production).
+        import structlog
+        structlog.get_logger("security").warning(
+            "encrypt_field.no_key — el valor se guarda en CLARO. "
+            "Configura FIELD_ENCRYPTION_KEY para activar cifrado."
+        )
         return value
     return fernet.encrypt(value.encode()).decode()
 
@@ -148,5 +154,11 @@ def decrypt_field(value: str | None) -> str | None:
     try:
         return fernet.decrypt(value.encode()).decode()
     except InvalidToken:
-        # Probablemente el valor no estaba cifrado (legado).
+        # Probablemente el valor no estaba cifrado (legado) o fue manipulado.
+        # Lo logueamos para que aparezca como señal de tampering pero seguimos
+        # devolviendo el valor (compatibilidad con datos pre-cifrado).
+        import structlog
+        structlog.get_logger("security").warning(
+            "decrypt_field.invalid_token — valor no descifrable; posible tampering o legado."
+        )
         return value

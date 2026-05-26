@@ -88,13 +88,16 @@ app.add_middleware(SlowAPIMiddleware)
 # CORS
 # =========================================================================
 if settings.BACKEND_CORS_ORIGINS:
+    # SECURITY: allow_credentials=False — usamos JWT Bearer en Authorization,
+    # no cookies. Activar credentials con origins permisivos sería un anti-patrón
+    # (CSRF cross-origin desde apps locales hostiles).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[str(o).rstrip("/") for o in settings.BACKEND_CORS_ORIGINS],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept"],
-        expose_headers=["Content-Disposition"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "Idempotency-Key", "X-Request-ID"],
+        expose_headers=["Content-Disposition", "X-Request-ID"],
         max_age=600,
     )
 
@@ -111,11 +114,10 @@ async def request_context(request: Request, call_next):
     - Lo devuelve en la respuesta para correlación cliente↔servidor.
     """
     import uuid as _uuid
+    from app.core.limiter import client_ip_key
     req_id = request.headers.get("x-request-id") or _uuid.uuid4().hex[:16]
-    client_ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-    )
+    # Reutilizar la misma política segura que el limiter (X-Real-IP > last hop).
+    client_ip = client_ip_key(request)
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(
         request_id=req_id,
@@ -137,9 +139,13 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
+        "interest-cohort=(), browsing-topics=(), fullscreen=(self), "
+        "accelerometer=(), gyroscope=(), magnetometer=()"
+    )
     if settings.IS_PRODUCTION:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     return response
 
 

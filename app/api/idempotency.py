@@ -22,7 +22,12 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utcnow_naive() -> datetime:
+    """UTC naive (compatible con columnas DateTime sin tz). Reemplaza utcnow() deprecado."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from typing import Any, Optional
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -65,7 +70,7 @@ class _IdempotencyGuard:
             raise HTTPException(409, "IDEMPOTENCY_KEY_CONFLICT_DIFFERENT_BODY")
 
         # Caducidad
-        if rec.IDK_Creada_En < datetime.utcnow() - timedelta(hours=IDEMPOTENCY_TTL_HOURS):
+        if rec.IDK_Creada_En < _utcnow_naive() - timedelta(hours=IDEMPOTENCY_TTL_HOURS):
             return None
 
         self._cached_record = rec
@@ -91,7 +96,7 @@ class _IdempotencyGuard:
             rec.IDK_Request_Hash = self.body_hash
             rec.IDK_Response_Status = status_code
             rec.IDK_Response_Body = serializable
-            rec.IDK_Creada_En = datetime.utcnow()
+            rec.IDK_Creada_En = _utcnow_naive()
         else:
             self.db.add(IdempotencyKey(
                 IDK_Key=self.key,
@@ -123,6 +128,9 @@ def _json_safe(obj):
     return _make_json_safe(obj)
 
 
+_IDEMPOTENCY_KEY_RE = __import__("re").compile(r"^[A-Za-z0-9_\-]{16,128}$")
+
+
 async def idempotency_guard(
     request: Request,
     current_user: CurrentUser,
@@ -132,7 +140,17 @@ async def idempotency_guard(
     """
     Dependencia FastAPI. Inyecta un objeto `idempotency` que el endpoint
     puede usar para `lookup()` y `store(body)`.
+
+    SECURITY: si llega el header, debe cumplir `^[A-Za-z0-9_-]{16,128}$`.
+    Rechazamos cualquier otra cosa para evitar envenenamiento de la tabla
+    SYS_IDEMPOTENCY_KEY con caracteres raros / strings cortos repetidos.
     """
+    if idempotency_key is not None and not _IDEMPOTENCY_KEY_RE.match(idempotency_key):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail="INVALID_IDEMPOTENCY_KEY (must match ^[A-Za-z0-9_-]{16,128}$)",
+        )
     body_bytes = await request.body()
     body_hash = hashlib.sha256(body_bytes).hexdigest() if body_bytes else "empty"
     return _IdempotencyGuard(

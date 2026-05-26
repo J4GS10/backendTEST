@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_client_ip, require_admin, require_super_admin
+from app.core.limiter import limiter
 from app.db.session import get_db
 from app.schemas.organization import (
     CargoCreate, CargoResponse, CargoUpdate,
@@ -30,16 +31,19 @@ def _ctx(request: Request, user: CurrentUser) -> dict:
 
 # ================= DEPARTAMENTOS =================
 @router.get("/departamentos/resumen")
-async def departamentos_resumen(service: OrganizationService = Depends(get_service)):
+@limiter.limit("10/minute")
+async def departamentos_resumen(request: Request, service: OrganizationService = Depends(get_service)):
     """
     Lista de departamentos con conteo de personas activas, activos asignados
     y desglose por tipo de activo. Pensado para una vista dashboard organizacional.
+    Rate-limit estricto: agregación costosa (multiples JOIN + GROUP BY).
     """
     return await service.departamentos_resumen()
 
 
 @router.get("/departamentos/{id}/detalle")
-async def get_departamento_detalle(id: int, service: OrganizationService = Depends(get_service)):
+@limiter.limit("10/minute")
+async def get_departamento_detalle(id: int, request: Request, service: OrganizationService = Depends(get_service)):
     """
     Detalle del departamento: lista de personas con los activos que tienen asignados.
     Útil para "¿qué tiene este departamento?".
@@ -118,12 +122,15 @@ async def delete_cargo(
 
 # ================= PERSONAS =================
 @router.get("/personas", response_model=List[PersonaResponse])
-async def list_personas(service: OrganizationService = Depends(get_service)):
+@limiter.limit("20/minute")
+async def list_personas(request: Request, service: OrganizationService = Depends(get_service)):
+    """Listado con PII (nombres, emails). Rate-limit para frenar scraping."""
     return await service.get_personas()
 
 
 @router.get("/personas/disponibles", response_model=List[PersonaResponse])
-async def list_personas_disponibles(service: OrganizationService = Depends(get_service)):
+@limiter.limit("20/minute")
+async def list_personas_disponibles(request: Request, service: OrganizationService = Depends(get_service)):
     """Personas sin usuario asignado."""
     return await service.get_personas_disponibles()
 
@@ -159,7 +166,9 @@ async def delete_persona(
 
 # ================= USUARIOS — SUPER_ADMIN o ADMIN_TI =================
 @router.get("/usuarios", response_model=List[UsuarioResponse], dependencies=ADMIN)
-async def list_usuarios(service: OrganizationService = Depends(get_service)):
+@limiter.limit("20/minute")
+async def list_usuarios(request: Request, service: OrganizationService = Depends(get_service)):
+    """Listado de usuarios (incluye username + rol). Rate-limit para frenar scraping."""
     return await service.get_usuarios()
 
 

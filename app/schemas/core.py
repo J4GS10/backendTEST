@@ -68,7 +68,12 @@ class ActivoDetailResponse(ActivoResponse):
     pass  # Por ahora igual, pero preparado para expansión (ej. historial)
 
 class ActivoFilter(BaseModel):
-    q: Optional[str] = Field(None, description="Búsqueda combinada en código, serie, hostname")
+    # max_length=64 acota el coste de la búsqueda LIKE; los metacaracteres
+    # `%` y `_` se escapan en el repository antes de pasarse a ilike().
+    q: Optional[str] = Field(
+        None, max_length=64,
+        description="Búsqueda combinada en código, serie, hostname (max 64 chars)",
+    )
     modelo_id: Optional[int] = None
     tipo_activo_id: Optional[int] = None
     estado_operativo_id: Optional[int] = None

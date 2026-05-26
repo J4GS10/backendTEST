@@ -9,6 +9,11 @@ echo "==> Bootstrap inicial (idempotente)..."
 python -m app.init_prod || echo "WARN: init_prod falló (probablemente ya está inicializado)"
 
 if [ "${SEED_DEMO:-false}" = "true" ]; then
+    if [ "${ENVIRONMENT:-development}" = "production" ]; then
+        echo "ERROR: SEED_DEMO=true es incompatible con ENVIRONMENT=production." >&2
+        echo "       Crea usuarios con passwords conocidas. Refuse to start." >&2
+        exit 1
+    fi
     echo "==> Cargando data demo (idempotente)..."
     python -m app.seed_demo || echo "WARN: seed_demo falló (probablemente ya está cargado)"
 fi
