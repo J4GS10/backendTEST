@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_admin, require_super_admin
+from app.core.errors import utcnow_naive
 from app.core.limiter import limiter
 from app.db.session import get_db
 from app.repositories.core import CoreRepository
@@ -42,7 +42,7 @@ def _csv_response(headers: list[str], rows, filename_prefix: str) -> StreamingRe
     for row in rows:
         writer.writerow([_safe_cell(c) for c in row])
     buf.seek(0)
-    fname = f"{filename_prefix}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    fname = f"{filename_prefix}_{utcnow_naive().strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv; charset=utf-8",

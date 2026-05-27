@@ -414,7 +414,8 @@ async def seed_demo() -> None:
         # ===== MOVIMIENTOS (asignaciones) =====
         log.info("==> Movimientos (asignaciones de activos a personas)")
         tipo_asig = tipos_mov[1]  # Asignación
-        now = datetime.utcnow()
+        from app.core.errors import utcnow_naive
+        now = utcnow_naive()
         db.add_all([
             Movimiento(
                 ACT_Activo=activos[0].ACT_Activo,

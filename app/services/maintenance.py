@@ -1,7 +1,7 @@
 """Servicio de mantenimientos."""
 from __future__ import annotations
 
-from app.core.errors import internal_error
+from app.core.errors import internal_error, utcnow_naive
 from app.core.transactional import commit_or_409
 
 import uuid
@@ -196,7 +196,7 @@ class MaintenanceService:
             if mant.MAN_Fecha_Cierre:
                 raise HTTPException(400, "TICKET_ALREADY_CLOSED")
 
-            fecha = schema.MAN_Fecha_Cierre or datetime.utcnow()
+            fecha = schema.MAN_Fecha_Cierre or utcnow_naive()
             if fecha < mant.MAN_Fecha_Ingreso:
                 raise HTTPException(400, "CLOSE_DATE_CANNOT_BE_BEFORE_ENTRY_DATE")
 

@@ -22,12 +22,9 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
-
-def _utcnow_naive() -> datetime:
-    """UTC naive (compatible con columnas DateTime sin tz). Reemplaza utcnow() deprecado."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+from app.core.errors import utcnow_naive as _utcnow_naive
 from typing import Any, Optional
 
 from fastapi import Depends, Header, HTTPException, Request

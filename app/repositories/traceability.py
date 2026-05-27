@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 
+from app.core.errors import utcnow_naive
 from sqlalchemy import and_, delete, desc, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -129,7 +130,7 @@ class TraceabilityRepository:
                 Movimiento.MOV_Movimiento == movimiento_id,
                 Movimiento.MOV_Fecha_Devolucion.is_(None),
             )
-            .values(MOV_Fecha_Devolucion=datetime.utcnow())
+            .values(MOV_Fecha_Devolucion=utcnow_naive())
         )
         return result.rowcount == 1
 
@@ -198,7 +199,7 @@ class TraceabilityRepository:
                 Movimiento.PER_Persona == persona_id,
                 Movimiento.MOV_Fecha_Devolucion.is_(None),
             )
-            .values(MOV_Fecha_Devolucion=datetime.utcnow())
+            .values(MOV_Fecha_Devolucion=utcnow_naive())
         )
         await self.db.flush()
         return result.rowcount

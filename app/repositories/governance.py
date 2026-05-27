@@ -15,6 +15,7 @@ from sqlalchemy.future import select
 from datetime import datetime, timedelta
 
 from app.core.config import settings
+from app.core.errors import utcnow_naive
 from app.models.governance import AuditoriaSistema, ConfiguracionSistema, Secuencia, TokenRevocado
 from app.schemas.governance import ConfigUpdate
 
@@ -123,7 +124,7 @@ class GovernanceRepository:
         from sqlalchemy import delete
         from app.models.governance import IdempotencyKey, TokenRevocado
 
-        now = datetime.utcnow()
+        now = utcnow_naive()
         cutoff_idem = now - timedelta(hours=24)
 
         tok = await self.db.execute(
@@ -151,7 +152,7 @@ class GovernanceRepository:
         se insertara la primera vez, una segunda revocación no invalidaría los
         tokens emitidos entre la primera y la segunda (bug de obsolescencia).
         """
-        now = datetime.utcnow()
+        now = utcnow_naive()
         wildcard = f"USR-ALL-{usuario_id}"
         existing = await self.db.execute(
             select(TokenRevocado).where(TokenRevocado.TRV_Jti == wildcard)
