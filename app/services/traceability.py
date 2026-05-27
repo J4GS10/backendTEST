@@ -106,6 +106,30 @@ class TraceabilityService:
     async def list_movimientos(self, skip: int = 0, limit: int = 50):
         return await self.repo.get_all_movimientos(skip, limit)
 
+    async def _get_estado_id(self, nombre_ilike: str) -> int | None:
+        """Resuelve el id de un EstadoOperativo por nombre (case-insensitive)."""
+        row = (await self.db.execute(
+            select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike(nombre_ilike))
+        )).scalar_one_or_none()
+        return row.EOP_Estado_Operativo if row else None
+
+    async def _get_tipo_movimiento_nombre(self, tipo_id: int) -> str:
+        """Devuelve el nombre del tipo de movimiento (para decidir la transición)."""
+        row = (await self.db.execute(
+            select(TipoMovimiento).where(TipoMovimiento.TMO_Tipo_Movimiento == tipo_id)
+        )).scalar_one_or_none()
+        return (row.TMO_Nombre or "").lower() if row else ""
+
+    async def _set_activo_estado(self, activo_id: uuid.UUID, estado_id: int) -> None:
+        """UPDATE puntual del EOP_Estado_Operativo de un activo."""
+        from sqlalchemy import update as sql_update
+        from app.models.core import Activo as ActivoModel
+        await self.db.execute(
+            sql_update(ActivoModel)
+            .where(ActivoModel.ACT_Activo == activo_id)
+            .values(EOP_Estado_Operativo=estado_id)
+        )
+
     async def registrar_movimiento(
         self,
         schema: MovimientoCreate,
@@ -115,6 +139,11 @@ class TraceabilityService:
         """
         Asigna activo a persona/área. Lock + UPDATE condicional aseguran
         que no queden dos movimientos abiertos para el mismo activo.
+
+        Transición de estado (atómica, en la MISMA transacción):
+          - ASIGNACIÓN / PRÉSTAMO → estado "Asignado"
+          - DEVOLUCIÓN           → estado "En Bodega"
+          - INGRESO              → estado "Disponible"
         """
         try:
             activo = await self.core_repo.get_by_id_simple(schema.ACT_Activo)
@@ -122,9 +151,8 @@ class TraceabilityService:
                 raise HTTPException(404, detail="ASSET_NOT_FOUND")
 
             # Validar estado != Baja
-            q_baja = select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike("Baja"))
-            estado_baja = (await self.db.execute(q_baja)).scalar_one_or_none()
-            if estado_baja and activo.EOP_Estado_Operativo == estado_baja.EOP_Estado_Operativo:
+            estado_baja_id = await self._get_estado_id("Baja")
+            if estado_baja_id and activo.EOP_Estado_Operativo == estado_baja_id:
                 raise HTTPException(400, detail="CANNOT_ASSIGN_DECOMMISSIONED_ASSET")
 
             # Persona y Área
@@ -147,12 +175,28 @@ class TraceabilityService:
 
             nuevo = await self.repo.create_movimiento(schema)
 
+            # Transición de estado según el tipo de movimiento.
+            tipo_nombre = await self._get_tipo_movimiento_nombre(schema.TMO_Tipo_Movimiento)
+            nuevo_estado_id: int | None = None
+            if "asign" in tipo_nombre or "préstam" in tipo_nombre or "prestam" in tipo_nombre:
+                nuevo_estado_id = await self._get_estado_id("Asignado")
+            elif "devol" in tipo_nombre:
+                nuevo_estado_id = await self._get_estado_id("%Bodega%")
+            elif "ingres" in tipo_nombre:
+                nuevo_estado_id = await self._get_estado_id("Disponible")
+            elif "transfer" in tipo_nombre:
+                nuevo_estado_id = await self._get_estado_id("Asignado")
+
+            if nuevo_estado_id and nuevo_estado_id != activo.EOP_Estado_Operativo:
+                await self._set_activo_estado(schema.ACT_Activo, nuevo_estado_id)
+
             await self.gov_repo.create_audit_log(
                 "ASSIGN", "INV_MOVIMIENTO",
                 {
                     "activo": str(schema.ACT_Activo),
                     "persona": str(schema.PER_Persona),
                     "area": schema.ARE_Area,
+                    "estado_nuevo": nuevo_estado_id,
                 },
                 usuario_id=usuario_id, ip_origen=ip,
             )
@@ -300,9 +344,14 @@ class TraceabilityService:
                 # Otro proceso lo cerró antes.
                 raise HTTPException(409, detail="MOVEMENT_ALREADY_CLOSED")
 
+            # Devolución → activo vuelve a estado "En Bodega" en la misma transacción.
+            estado_bodega_id = await self._get_estado_id("%Bodega%")
+            if estado_bodega_id:
+                await self._set_activo_estado(schema.ACT_Activo, estado_bodega_id)
+
             await self.gov_repo.create_audit_log(
                 "RETURN", "INV_MOVIMIENTO",
-                {"activo": str(schema.ACT_Activo)},
+                {"activo": str(schema.ACT_Activo), "estado_nuevo": estado_bodega_id},
                 usuario_id=usuario_id, ip_origen=ip,
             )
             await self.db.commit()
@@ -353,12 +402,18 @@ class TraceabilityService:
             )
             created = await self.repo.create_movimiento(nuevo_mov)
 
+            # Transferencia: el activo sigue "Asignado", garantizamos el estado.
+            estado_asignado_id = await self._get_estado_id("Asignado")
+            if estado_asignado_id:
+                await self._set_activo_estado(schema.ACT_Activo, estado_asignado_id)
+
             await self.gov_repo.create_audit_log(
                 "TRANSFER", "INV_MOVIMIENTO",
                 {
                     "activo": str(schema.ACT_Activo),
                     "de_persona": str(vigente.PER_Persona),
                     "a_persona": str(schema.PER_Persona_Destino),
+                    "estado_nuevo": estado_asignado_id,
                 },
                 usuario_id=usuario_id, ip_origen=ip,
             )
