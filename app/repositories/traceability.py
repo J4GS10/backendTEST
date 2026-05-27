@@ -153,6 +153,10 @@ class TraceabilityRepository:
                 selectinload(Movimiento.persona),
                 selectinload(Movimiento.tipo_movimiento),
                 selectinload(Movimiento.area),
+                # Sin esto el schema MovimientoResponse intenta lazy-load el
+                # activo y revienta con MissingGreenlet en async.
+                selectinload(Movimiento.activo).selectinload(Activo.modelo).selectinload(Modelo.marca),
+                selectinload(Movimiento.activo).selectinload(Activo.tipo_activo),
             )
             .where(Movimiento.ACT_Activo == activo_id)
             .order_by(desc(Movimiento.MOV_Fecha_Asignacion))

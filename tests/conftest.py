@@ -108,3 +108,141 @@ async def auth_token(client, sa_user):
 @pytest_asyncio.fixture
 async def auth_headers(auth_token):
     return {"Authorization": f"Bearer {auth_token}"}
+
+
+# =========================================================================
+# FIXTURES RICAS: catálogos completos para tests de flujo (asignación,
+# offboarding, transición de estados, exports). Reflejan el mismo dominio
+# que el seed_demo para que los tests cubran rutas reales del sistema.
+# =========================================================================
+@pytest_asyncio.fixture
+async def domain_seed(session, sa_user):
+    """
+    Carga catálogos mínimos para tests de flujo:
+      - TipoActivo: Laptop, Desktop, Monitor
+      - Marca + Modelo
+      - EstadoOperativo: Disponible(1), Asignado(2), En Reparación(3), Baja(4), En Bodega(5)
+      - TipoMovimiento: Ingreso(1), Asignación(2), Devolución(3), Préstamo(4), Transferencia(5)
+      - Ubicación: País → Estado → Municipio → Sede → Edificio → Nivel → Area
+      - 2 Personas (alice, bob) en mismo depto, con cargo
+      - 2 Activos: LAP-001 (Disponible), LAP-002 (En Bodega)
+
+    Devuelve un dict con todos los ids/uuids para que el test los referencie
+    sin hacer queries adicionales.
+    """
+    from app.models.catalogs import (
+        TipoActivo, Marca, Modelo, EstadoOperativo,
+    )
+    from app.models.core import Activo
+    from app.models.location import Pais, Estado as Edo, Municipio, Sede, Edificio, Nivel, Area
+    from app.models.organization import Cargo, Departamento, Persona
+    from app.models.traceability import TipoMovimiento
+    from datetime import date
+
+    # Catálogos técnicos
+    tac_lap = TipoActivo(TAC_Nombre="Laptop", TAC_Prefijo="LAP")
+    tac_dsk = TipoActivo(TAC_Nombre="Desktop", TAC_Prefijo="DSK")
+    tac_mon = TipoActivo(TAC_Nombre="Monitor", TAC_Prefijo="MON")
+    mar = Marca(MAR_Nombre="TestVendor")
+    session.add_all([tac_lap, tac_dsk, tac_mon, mar])
+    await session.flush()
+
+    mod = Modelo(MOD_Nombre="Model-X", MAR_Marca=mar.MAR_Marca, MOD_Anio_Lanzamiento=2024)
+    session.add(mod)
+    await session.flush()
+
+    # Estados Operativos — IDs explícitos para que el matching ilike funcione
+    eop_disp = EstadoOperativo(EOP_Nombre="Disponible")
+    eop_asig = EstadoOperativo(EOP_Nombre="Asignado")
+    eop_rep = EstadoOperativo(EOP_Nombre="En Reparación")
+    eop_baja = EstadoOperativo(EOP_Nombre="Baja")
+    eop_bod = EstadoOperativo(EOP_Nombre="En Bodega")
+    session.add_all([eop_disp, eop_asig, eop_rep, eop_baja, eop_bod])
+    await session.flush()
+
+    # Tipos de movimiento
+    tmo_in = TipoMovimiento(TMO_Nombre="Ingreso")
+    tmo_asg = TipoMovimiento(TMO_Nombre="Asignación")
+    tmo_dev = TipoMovimiento(TMO_Nombre="Devolución")
+    tmo_pres = TipoMovimiento(TMO_Nombre="Préstamo")
+    tmo_tra = TipoMovimiento(TMO_Nombre="Transferencia")
+    session.add_all([tmo_in, tmo_asg, tmo_dev, tmo_pres, tmo_tra])
+    await session.flush()
+
+    # Ubicación
+    pais = Pais(PAI_Nombre="México", PAI_Codigo_ISO="MX")
+    session.add(pais); await session.flush()
+    edo = Edo(EST_Nombre="Jalisco", PAI_Pais=pais.PAI_Pais)
+    session.add(edo); await session.flush()
+    muni = Municipio(MUN_Nombre="Guadalajara", EST_Estado=edo.EST_Estado)
+    session.add(muni); await session.flush()
+    sede = Sede(SED_Nombre="Oficina GDL", MUN_Municipio=muni.MUN_Municipio)
+    session.add(sede); await session.flush()
+    edif = Edificio(EDI_Nombre="Edificio A", SED_Sede=sede.SED_Sede)
+    session.add(edif); await session.flush()
+    niv = Nivel(NIV_Numero_Piso=1, EDI_Edificio=edif.EDI_Edificio)
+    session.add(niv); await session.flush()
+    area = Area(ARE_Nombre="TI", NIV_Nivel=niv.NIV_Nivel)
+    session.add(area); await session.flush()
+
+    # Organización: cargo + depto reutilizable
+    dep = Departamento(DEP_Nombre="Tecnología")
+    car = Cargo(CAR_Nombre="Ingeniero")
+    session.add_all([dep, car]); await session.flush()
+
+    alice = Persona(
+        PER_Primer_Nombre="Alice", PER_Primer_Apellido="Test",
+        PER_Email_Corporativo="alice@test.local",
+        DEP_Departamento=dep.DEP_Departamento, CAR_Cargo=car.CAR_Cargo,
+    )
+    bob = Persona(
+        PER_Primer_Nombre="Bob", PER_Primer_Apellido="Test",
+        PER_Email_Corporativo="bob@test.local",
+        DEP_Departamento=dep.DEP_Departamento, CAR_Cargo=car.CAR_Cargo,
+    )
+    session.add_all([alice, bob])
+    await session.flush()
+
+    # Activos: uno disponible, uno en bodega
+    act_1 = Activo(
+        ACT_Codigo_Interno="LAP-001",
+        ACT_Serie_Fabricante="SER-001",
+        ACT_Hostname="laptop-1",
+        ACT_Fecha_Compra=date(2024, 1, 1),
+        MOD_Modelo=mod.MOD_Modelo,
+        TAC_Tipo_Activo=tac_lap.TAC_Tipo_Activo,
+        EOP_Estado_Operativo=eop_disp.EOP_Estado_Operativo,
+    )
+    act_2 = Activo(
+        ACT_Codigo_Interno="LAP-002",
+        ACT_Serie_Fabricante="SER-002",
+        ACT_Fecha_Compra=date(2024, 2, 1),
+        MOD_Modelo=mod.MOD_Modelo,
+        TAC_Tipo_Activo=tac_lap.TAC_Tipo_Activo,
+        EOP_Estado_Operativo=eop_bod.EOP_Estado_Operativo,
+    )
+    session.add_all([act_1, act_2])
+    await session.commit()
+
+    return {
+        "tac_lap": tac_lap.TAC_Tipo_Activo,
+        "tac_dsk": tac_dsk.TAC_Tipo_Activo,
+        "tac_mon": tac_mon.TAC_Tipo_Activo,
+        "mar": mar.MAR_Marca,
+        "mod": mod.MOD_Modelo,
+        "eop_disp": eop_disp.EOP_Estado_Operativo,
+        "eop_asig": eop_asig.EOP_Estado_Operativo,
+        "eop_rep": eop_rep.EOP_Estado_Operativo,
+        "eop_baja": eop_baja.EOP_Estado_Operativo,
+        "eop_bod": eop_bod.EOP_Estado_Operativo,
+        "tmo_in": tmo_in.TMO_Tipo_Movimiento,
+        "tmo_asg": tmo_asg.TMO_Tipo_Movimiento,
+        "tmo_dev": tmo_dev.TMO_Tipo_Movimiento,
+        "tmo_pres": tmo_pres.TMO_Tipo_Movimiento,
+        "tmo_tra": tmo_tra.TMO_Tipo_Movimiento,
+        "area": area.ARE_Area,
+        "alice": str(alice.PER_Persona),
+        "bob": str(bob.PER_Persona),
+        "act_1": str(act_1.ACT_Activo),  # Disponible
+        "act_2": str(act_2.ACT_Activo),  # En Bodega
+    }
