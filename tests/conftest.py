@@ -246,3 +246,36 @@ async def domain_seed(session, sa_user):
         "act_1": str(act_1.ACT_Activo),  # Disponible
         "act_2": str(act_2.ACT_Activo),  # En Bodega
     }
+
+
+@pytest_asyncio.fixture
+async def software_seed(session, domain_seed):
+    """Catálogo de software/licencias + tipos de mantenimiento."""
+    from app.models.traceability import TipoMantenimiento
+    from app.models.software import Software, Licencia, TipoLicencia
+
+    tli = TipoLicencia(TLI_Nombre="Volumen")
+    sof = Software(SOF_Nombre="Office 365", SOF_Version="2024", SOF_Fabricante="Microsoft")
+    session.add_all([tli, sof])
+    await session.flush()
+
+    lic = Licencia(
+        SOF_Software=sof.SOF_Software,
+        TLI_Tipo_Licencia=tli.TLI_Tipo_Licencia,
+        LIC_Cantidad_Total=5,
+        LIC_Cantidad_Usada=0,
+    )
+    session.add(lic)
+
+    tma_corr = TipoMantenimiento(TMA_Nombre="Correctivo")
+    tma_prev = TipoMantenimiento(TMA_Nombre="Preventivo")
+    session.add_all([tma_corr, tma_prev])
+    await session.commit()
+
+    return {
+        **domain_seed,
+        "sof": sof.SOF_Software,
+        "lic": lic.LIC_Licencia,
+        "tma_corr": tma_corr.TMA_Tipo_Mantenimiento,
+        "tma_prev": tma_prev.TMA_Tipo_Mantenimiento,
+    }
