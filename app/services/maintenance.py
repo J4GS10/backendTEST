@@ -204,13 +204,28 @@ class MaintenanceService:
                 mantenimiento_id, fecha_cierre=fecha, costo_total=schema.MAN_Costo_Total
             )
 
-            estado_disponible = (await self.db.execute(
-                select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike("%Disponible%"))
+            # Transición correcta al cerrar mantenimiento:
+            #   - Si el activo tiene un movimiento vigente (alguien lo tiene
+            #     en custodia) → vuelve a 'Asignado' (no a 'Disponible', que
+            #     dejaría inconsistencia entre INV_MOVIMIENTO e INV_ACTIVO).
+            #   - Si no tiene movimiento abierto → vuelve a 'En Bodega' o
+            #     'Disponible' según el sistema. Usamos 'En Bodega' por defecto
+            #     (caso típico: el activo entró a reparación tras un retorno).
+            from app.models.traceability import Movimiento as _Mov
+            mov_vigente = (await self.db.execute(
+                select(_Mov).where(
+                    _Mov.ACT_Activo == mant.ACT_Activo,
+                    _Mov.MOV_Fecha_Devolucion.is_(None),
+                )
             )).scalar_one_or_none()
-            if estado_disponible:
+            nuevo_nombre = "Asignado" if mov_vigente else "%Bodega%"
+            estado_nuevo = (await self.db.execute(
+                select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike(nuevo_nombre))
+            )).scalar_one_or_none()
+            if estado_nuevo:
                 activo = await self.core_repo.get_by_id_simple(mant.ACT_Activo)
                 if activo:
-                    activo.EOP_Estado_Operativo = estado_disponible.EOP_Estado_Operativo
+                    activo.EOP_Estado_Operativo = estado_nuevo.EOP_Estado_Operativo
 
             await self.gov_repo.create_audit_log(
                 "CLOSE", "INV_MANTENIMIENTO",
