@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from app.core.errors import internal_error
+from app.core.email import send_notification
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -202,7 +204,47 @@ class TraceabilityService:
             )
 
             await self.db.commit()
-            return await self.repo.get_by_id_full(nuevo.MOV_Movimiento)
+            resultado = await self.repo.get_by_id_full(nuevo.MOV_Movimiento)
+
+            # Notificación por email (best-effort, post-commit). Si falla SMTP,
+            # NO revertimos: la operación de negocio ya está persistida.
+            try:
+                a = resultado.activo
+                p = resultado.persona
+                template = "asignacion" if "transfer" not in tipo_nombre else "asignacion"
+                marca = ""
+                modelo = ""
+                tipo_act = ""
+                if a and getattr(a, "modelo", None):
+                    modelo = a.modelo.MOD_Nombre or ""
+                    if getattr(a.modelo, "marca", None):
+                        marca = a.modelo.marca.MAR_Nombre or ""
+                if a and getattr(a, "tipo_activo", None):
+                    tipo_act = a.tipo_activo.TAC_Nombre or ""
+                await send_notification(
+                    template,
+                    {
+                        "codigo": a.ACT_Codigo_Interno if a else "",
+                        "serie": a.ACT_Serie_Fabricante if a else "",
+                        "hostname": a.ACT_Hostname if a else "",
+                        "tipo": tipo_act,
+                        "marca": marca,
+                        "modelo": modelo,
+                        "persona_nombre": f"{p.PER_Primer_Nombre} {p.PER_Primer_Apellido}" if p else "",
+                        "fecha": resultado.MOV_Fecha_Asignacion.isoformat() if resultado.MOV_Fecha_Asignacion else "",
+                        "area": resultado.area.ARE_Nombre if resultado.area else "",
+                        "observacion": resultado.MOV_Observacion or "",
+                    },
+                    to=[p.PER_Email_Corporativo] if p and p.PER_Email_Corporativo else (),
+                )
+            except Exception as e:  # noqa: BLE001
+                # Logueamos pero no propagamos.
+                import structlog
+                structlog.get_logger("traceability").warning(
+                    "notify.assign_failed", error=str(e)[:200],
+                )
+
+            return resultado
         except HTTPException:
             await self.db.rollback(); raise
         except Exception as e:
@@ -313,6 +355,36 @@ class TraceabilityService:
                 )
 
             await self.db.commit()
+
+            # Notificación post-commit
+            if algo_cambio:
+                try:
+                    # Buscar códigos de activos liberados para listarlos en el email
+                    activos_codigos: list[str] = []
+                    if vigentes:
+                        from app.models.core import Activo as _Activo
+                        rows = (await self.db.execute(
+                            select(_Activo.ACT_Codigo_Interno)
+                            .where(_Activo.ACT_Activo.in_([m.ACT_Activo for m in vigentes]))
+                        )).all()
+                        activos_codigos = [r[0] for r in rows]
+                    await send_notification(
+                        "offboarding",
+                        {
+                            "persona_nombre": f"{persona.PER_Primer_Nombre} {persona.PER_Primer_Apellido}",
+                            "persona_email": persona.PER_Email_Corporativo or "—",
+                            "num_activos": len(activos_codigos),
+                            "activos_lista": activos_codigos,
+                            "usuario_desactivado": "Sí" if usuario_desactivado else "No",
+                            "fecha": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                        },
+                        # Persona saliente NO recibe (su email puede estar deshabilitado),
+                        # solo admins.
+                        to=(),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
             return {
                 "status": "success",
                 "persona_id": str(persona_id),
@@ -355,6 +427,28 @@ class TraceabilityService:
                 usuario_id=usuario_id, ip_origen=ip,
             )
             await self.db.commit()
+
+            # Notificación post-commit
+            try:
+                activo = await self.core_repo.get_by_id_simple(schema.ACT_Activo)
+                persona = (await self.db.execute(
+                    select(Persona).where(Persona.PER_Persona == vigente.PER_Persona)
+                )).scalar_one_or_none()
+                await send_notification(
+                    "devolucion",
+                    {
+                        "codigo": activo.ACT_Codigo_Interno if activo else "",
+                        "persona_nombre": (
+                            f"{persona.PER_Primer_Nombre} {persona.PER_Primer_Apellido}"
+                            if persona else "—"
+                        ),
+                        "fecha": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                    },
+                    to=[persona.PER_Email_Corporativo] if persona and persona.PER_Email_Corporativo else (),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
             return {"status": "success", "message": "ASSET_RETURNED_SUCCESSFULLY"}
         except HTTPException:
             await self.db.rollback(); raise
@@ -418,6 +512,40 @@ class TraceabilityService:
                 usuario_id=usuario_id, ip_origen=ip,
             )
             await self.db.commit()
+
+            # Notificación post-commit a origen, destino y admins
+            try:
+                origen = (await self.db.execute(
+                    select(Persona).where(Persona.PER_Persona == vigente.PER_Persona)
+                )).scalar_one_or_none()
+                destino = (await self.db.execute(
+                    select(Persona).where(Persona.PER_Persona == schema.PER_Persona_Destino)
+                )).scalar_one_or_none()
+                activo = await self.core_repo.get_by_id_simple(schema.ACT_Activo)
+                emails_to = [
+                    e for e in (
+                        origen.PER_Email_Corporativo if origen else None,
+                        destino.PER_Email_Corporativo if destino else None,
+                    ) if e
+                ]
+                await send_notification(
+                    "transferencia",
+                    {
+                        "codigo": activo.ACT_Codigo_Interno if activo else "",
+                        "origen_nombre": (
+                            f"{origen.PER_Primer_Nombre} {origen.PER_Primer_Apellido}"
+                            if origen else "—"
+                        ),
+                        "destino_nombre": (
+                            f"{destino.PER_Primer_Nombre} {destino.PER_Primer_Apellido}"
+                            if destino else "—"
+                        ),
+                        "fecha": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                    },
+                    to=emails_to,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return await self.repo.get_by_id_full(created.MOV_Movimiento)
         except HTTPException:
             await self.db.rollback(); raise

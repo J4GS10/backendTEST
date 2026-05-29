@@ -209,6 +209,24 @@ class CoreService:
                 usuario_id=usuario_id
             )
             await self.db.commit()
+
+            # Notificación post-commit
+            try:
+                from app.core.email import send_notification
+                from datetime import datetime, timezone
+                await send_notification(
+                    "baja",
+                    {
+                        "codigo": activo.ACT_Codigo_Interno,
+                        "serie": activo.ACT_Serie_Fabricante,
+                        "fecha": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                        "motivo": "Baja lógica solicitada por administrador",
+                    },
+                    to=(),  # solo admins
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
             return resultado
 
         except HTTPException:

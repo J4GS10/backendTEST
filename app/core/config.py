@@ -63,6 +63,25 @@ class Settings(BaseSettings):
     FIELD_ENCRYPTION_KEY: str | None = None
 
     # =========================================================================
+    # SMTP — notificaciones por email
+    # Compatible con Brevo (300/día gratis), SendGrid (100/día), Gmail, Resend,
+    # MailerSend, MailHog (dev). Si SMTP_HOST está vacío, los emails se loguean
+    # pero no se envían (modo silencioso, útil para tests).
+    # =========================================================================
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_TLS: bool = True
+    SMTP_STARTTLS: bool = True
+    SMTP_FROM_EMAIL: str = "noreply@lombardi.local"
+    SMTP_FROM_NAME: str = "Sistema Inventario Lombardi"
+    # Destinatario(s) admin que recibe copia de TODOS los eventos. Lista CSV.
+    NOTIFY_ADMIN_EMAILS: str = ""  # "ops@empresa.com,it-lead@empresa.com"
+    # Habilita / deshabilita envío sin cambiar SMTP_HOST (kill switch operacional).
+    EMAIL_ENABLED: bool = True
+
+    # =========================================================================
     # VALIDATORS
     # =========================================================================
     @field_validator("SECRET_KEY")

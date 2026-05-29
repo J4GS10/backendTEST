@@ -130,6 +130,36 @@ class MaintenanceService:
                 usuario_id=usuario_id, ip_origen=ip,
             )
             await self._commit()
+
+            # Notificación post-commit
+            try:
+                from app.core.email import send_notification
+                tipo_nombre = ""
+                tm_row = (await self.db.execute(
+                    select(self.repo.tipo_model).where(  # type: ignore
+                        self.repo.tipo_model.TMA_Tipo_Mantenimiento == schema.TMA_Tipo_Mantenimiento  # type: ignore
+                    )
+                )).scalar_one_or_none() if hasattr(self.repo, "tipo_model") else None
+                from app.models.traceability import TipoMantenimiento as _TM
+                tm = (await self.db.execute(
+                    select(_TM).where(_TM.TMA_Tipo_Mantenimiento == schema.TMA_Tipo_Mantenimiento)
+                )).scalar_one_or_none()
+                if tm:
+                    tipo_nombre = tm.TMA_Nombre
+                await send_notification(
+                    "mantenimiento_abierto",
+                    {
+                        "codigo": activo.ACT_Codigo_Interno if activo else "",
+                        "tipo": tipo_nombre,
+                        "persona_nombre": f"{persona.PER_Primer_Nombre} {persona.PER_Primer_Apellido}" if persona else "",
+                        "descripcion": schema.MAN_Descripcion_Falla[:300],
+                        "fecha": mantenimiento.MAN_Fecha_Ingreso.isoformat() if mantenimiento.MAN_Fecha_Ingreso else "",
+                    },
+                    to=[persona.PER_Email_Corporativo] if persona and persona.PER_Email_Corporativo else (),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
             return mantenimiento
         except HTTPException:
             await self.db.rollback(); raise
@@ -233,6 +263,25 @@ class MaintenanceService:
                 usuario_id=usuario_id, ip_origen=ip,
             )
             await self._commit()
+
+            # Notificación post-commit
+            try:
+                from app.core.email import send_notification
+                activo = await self.core_repo.get_by_id_simple(mant.ACT_Activo)
+                estado_final = "Asignado" if mov_vigente else "En Bodega"
+                await send_notification(
+                    "mantenimiento_cerrado",
+                    {
+                        "codigo": activo.ACT_Codigo_Interno if activo else "",
+                        "costo": str(schema.MAN_Costo_Total),
+                        "fecha": fecha.isoformat(),
+                        "estado_final": estado_final,
+                    },
+                    to=(),  # solo admins
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
             return closed
         except HTTPException:
             await self.db.rollback(); raise
