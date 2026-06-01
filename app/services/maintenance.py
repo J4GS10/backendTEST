@@ -134,18 +134,27 @@ class MaintenanceService:
             # Notificación post-commit
             try:
                 from app.core.email import send_notification
-                tipo_nombre = ""
-                tm_row = (await self.db.execute(
-                    select(self.repo.tipo_model).where(  # type: ignore
-                        self.repo.tipo_model.TMA_Tipo_Mantenimiento == schema.TMA_Tipo_Mantenimiento  # type: ignore
-                    )
-                )).scalar_one_or_none() if hasattr(self.repo, "tipo_model") else None
+                from app.models.organization import Usuario
                 from app.models.traceability import TipoMantenimiento as _TM
                 tm = (await self.db.execute(
                     select(_TM).where(_TM.TMA_Tipo_Mantenimiento == schema.TMA_Tipo_Mantenimiento)
                 )).scalar_one_or_none()
-                if tm:
-                    tipo_nombre = tm.TMA_Nombre
+                tipo_nombre = tm.TMA_Nombre if tm else ""
+                # Resolver operador
+                op_name, op_role, op_email = "Sistema", "", None
+                if usuario_id:
+                    usu = (await self.db.execute(
+                        select(Usuario).where(Usuario.USU_Usuario == usuario_id)
+                    )).scalar_one_or_none()
+                    if usu:
+                        op_role = usu.USU_Rol or ""
+                        from app.models.organization import Persona as _Per
+                        per_op = (await self.db.execute(
+                            select(_Per).where(_Per.PER_Persona == usu.PER_Persona)
+                        )).scalar_one_or_none()
+                        if per_op:
+                            op_name = f"{per_op.PER_Primer_Nombre} {per_op.PER_Primer_Apellido}"
+                            op_email = per_op.PER_Email_Corporativo
                 await send_notification(
                     "mantenimiento_abierto",
                     {
@@ -156,6 +165,9 @@ class MaintenanceService:
                         "fecha": mantenimiento.MAN_Fecha_Ingreso.isoformat() if mantenimiento.MAN_Fecha_Ingreso else "",
                     },
                     to=[persona.PER_Email_Corporativo] if persona and persona.PER_Email_Corporativo else (),
+                    reply_to=op_email,
+                    operator_name=op_name,
+                    operator_role=op_role,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -267,8 +279,23 @@ class MaintenanceService:
             # Notificación post-commit
             try:
                 from app.core.email import send_notification
+                from app.models.organization import Persona as _Per, Usuario
                 activo = await self.core_repo.get_by_id_simple(mant.ACT_Activo)
                 estado_final = "Asignado" if mov_vigente else "En Bodega"
+                # Resolver operador
+                op_name, op_role, op_email = "Sistema", "", None
+                if usuario_id:
+                    usu = (await self.db.execute(
+                        select(Usuario).where(Usuario.USU_Usuario == usuario_id)
+                    )).scalar_one_or_none()
+                    if usu:
+                        op_role = usu.USU_Rol or ""
+                        per_op = (await self.db.execute(
+                            select(_Per).where(_Per.PER_Persona == usu.PER_Persona)
+                        )).scalar_one_or_none()
+                        if per_op:
+                            op_name = f"{per_op.PER_Primer_Nombre} {per_op.PER_Primer_Apellido}"
+                            op_email = per_op.PER_Email_Corporativo
                 await send_notification(
                     "mantenimiento_cerrado",
                     {
@@ -278,6 +305,9 @@ class MaintenanceService:
                         "estado_final": estado_final,
                     },
                     to=(),  # solo admins
+                    reply_to=op_email,
+                    operator_name=op_name,
+                    operator_role=op_role,
                 )
             except Exception:  # noqa: BLE001
                 pass

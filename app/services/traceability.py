@@ -108,6 +108,27 @@ class TraceabilityService:
     async def list_movimientos(self, skip: int = 0, limit: int = 50):
         return await self.repo.get_all_movimientos(skip, limit)
 
+    async def _operator_info(self, usuario_id: uuid.UUID | None) -> tuple[str, str, str | None]:
+        """
+        Dado el usuario_id que ejecuta una acción, retorna (nombre_completo,
+        rol, email_corporativo). Si no se puede resolver, devuelve defaults
+        seguros para mostrar "Sistema" en el template.
+        """
+        if not usuario_id:
+            return ("Sistema", "", None)
+        usu = (await self.db.execute(
+            select(Usuario).where(Usuario.USU_Usuario == usuario_id)
+        )).scalar_one_or_none()
+        if not usu:
+            return ("Sistema", "", None)
+        per = (await self.db.execute(
+            select(Persona).where(Persona.PER_Persona == usu.PER_Persona)
+        )).scalar_one_or_none()
+        if not per:
+            return (usu.USU_Username, usu.USU_Rol or "", None)
+        nombre = f"{per.PER_Primer_Nombre} {per.PER_Primer_Apellido}"
+        return (nombre, usu.USU_Rol or "", per.PER_Email_Corporativo)
+
     async def _get_estado_id(self, nombre_ilike: str) -> int | None:
         """Resuelve el id de un EstadoOperativo por nombre (case-insensitive)."""
         row = (await self.db.execute(
@@ -221,6 +242,7 @@ class TraceabilityService:
                         marca = a.modelo.marca.MAR_Nombre or ""
                 if a and getattr(a, "tipo_activo", None):
                     tipo_act = a.tipo_activo.TAC_Nombre or ""
+                op_name, op_role, op_email = await self._operator_info(usuario_id)
                 await send_notification(
                     template,
                     {
@@ -236,6 +258,9 @@ class TraceabilityService:
                         "observacion": resultado.MOV_Observacion or "",
                     },
                     to=[p.PER_Email_Corporativo] if p and p.PER_Email_Corporativo else (),
+                    reply_to=op_email,
+                    operator_name=op_name,
+                    operator_role=op_role,
                 )
             except Exception as e:  # noqa: BLE001
                 # Logueamos pero no propagamos.
@@ -368,6 +393,7 @@ class TraceabilityService:
                             .where(_Activo.ACT_Activo.in_([m.ACT_Activo for m in vigentes]))
                         )).all()
                         activos_codigos = [r[0] for r in rows]
+                    op_name, op_role, op_email = await self._operator_info(usuario_id)
                     await send_notification(
                         "offboarding",
                         {
@@ -381,6 +407,9 @@ class TraceabilityService:
                         # Persona saliente NO recibe (su email puede estar deshabilitado),
                         # solo admins.
                         to=(),
+                        reply_to=op_email,
+                        operator_name=op_name,
+                        operator_role=op_role,
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -434,6 +463,7 @@ class TraceabilityService:
                 persona = (await self.db.execute(
                     select(Persona).where(Persona.PER_Persona == vigente.PER_Persona)
                 )).scalar_one_or_none()
+                op_name, op_role, op_email = await self._operator_info(usuario_id)
                 await send_notification(
                     "devolucion",
                     {
@@ -445,6 +475,9 @@ class TraceabilityService:
                         "fecha": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                     },
                     to=[persona.PER_Email_Corporativo] if persona and persona.PER_Email_Corporativo else (),
+                    reply_to=op_email,
+                    operator_name=op_name,
+                    operator_role=op_role,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -528,6 +561,7 @@ class TraceabilityService:
                         destino.PER_Email_Corporativo if destino else None,
                     ) if e
                 ]
+                op_name, op_role, op_email = await self._operator_info(usuario_id)
                 await send_notification(
                     "transferencia",
                     {
@@ -543,6 +577,9 @@ class TraceabilityService:
                         "fecha": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                     },
                     to=emails_to,
+                    reply_to=op_email,
+                    operator_name=op_name,
+                    operator_role=op_role,
                 )
             except Exception:  # noqa: BLE001
                 pass

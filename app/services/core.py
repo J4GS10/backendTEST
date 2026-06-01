@@ -213,7 +213,22 @@ class CoreService:
             # Notificación post-commit
             try:
                 from app.core.email import send_notification
+                from app.models.organization import Persona, Usuario
                 from datetime import datetime, timezone
+                # Resolver operador
+                op_name, op_role, op_email = "Sistema", "", None
+                if usuario_id:
+                    usu = (await self.db.execute(
+                        select(Usuario).where(Usuario.USU_Usuario == usuario_id)
+                    )).scalar_one_or_none()
+                    if usu:
+                        op_role = usu.USU_Rol or ""
+                        per = (await self.db.execute(
+                            select(Persona).where(Persona.PER_Persona == usu.PER_Persona)
+                        )).scalar_one_or_none()
+                        if per:
+                            op_name = f"{per.PER_Primer_Nombre} {per.PER_Primer_Apellido}"
+                            op_email = per.PER_Email_Corporativo
                 await send_notification(
                     "baja",
                     {
@@ -223,6 +238,9 @@ class CoreService:
                         "motivo": "Baja lógica solicitada por administrador",
                     },
                     to=(),  # solo admins
+                    reply_to=op_email,
+                    operator_name=op_name,
+                    operator_role=op_role,
                 )
             except Exception:  # noqa: BLE001
                 pass

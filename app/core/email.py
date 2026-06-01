@@ -20,6 +20,7 @@ from typing import Any, Iterable
 
 import structlog
 from jinja2 import Environment, BaseLoader
+from markupsafe import Markup
 
 from app.core.config import settings
 
@@ -43,7 +44,20 @@ _BASE_STYLE = """
   .footer { color:#9ca3af; font-size:12px; margin-top:24px; text-align:center; }
   .tag { display:inline-block; padding:2px 8px; border-radius:4px;
          background:#dbeafe; color:#1e40af; font-size:12px; font-weight:600; }
+  .operator { margin-top:16px; padding:12px; background:#f9fafb;
+              border-left:3px solid #0ea5e9; font-size:13px; color:#374151; }
+  .operator b { color:#0f172a; }
 </style>
+"""
+
+# Bloque común "Ejecutado por: X (rol)" — incluido en cada template via Jinja
+_OPERATOR_BLOCK = """
+{% if operator_name and operator_name != 'Sistema' %}
+<div class="operator">
+  <b>Ejecutado por:</b> {{ operator_name }}{% if operator_role %} <em>({{ operator_role }})</em>{% endif %}
+  {% if reply_to %}<br><b>Contacto:</b> <a href="mailto:{{ reply_to }}">{{ reply_to }}</a>{% endif %}
+</div>
+{% endif %}
 """
 
 _TEMPLATES: dict[str, str] = {
@@ -67,6 +81,7 @@ _TEMPLATES: dict[str, str] = {
     Si recibes este activo en mano, conserva esta notificación como respaldo.
     Para devolverlo, contacta al equipo de TI.
   </p>
+  {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
 </div>
 """,
@@ -81,6 +96,7 @@ _TEMPLATES: dict[str, str] = {
     <tr><td class="k">Fecha</td><td class="v">{{ fecha }}</td></tr>
     <tr><td class="k">Estado actual</td><td class="v">En Bodega</td></tr>
   </table>
+  {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
 </div>
 """,
@@ -95,6 +111,7 @@ _TEMPLATES: dict[str, str] = {
     <tr><td class="k">Hacia</td><td class="v">{{ destino_nombre }}</td></tr>
     <tr><td class="k">Fecha</td><td class="v">{{ fecha }}</td></tr>
   </table>
+  {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
 </div>
 """,
@@ -109,6 +126,7 @@ _TEMPLATES: dict[str, str] = {
     <tr><td class="k">Fecha de baja</td><td class="v">{{ fecha }}</td></tr>
     {% if motivo %}<tr><td class="k">Motivo</td><td class="v">{{ motivo }}</td></tr>{% endif %}
   </table>
+  {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
 </div>
 """,
@@ -128,6 +146,7 @@ _TEMPLATES: dict[str, str] = {
   <p style="margin-top:12px;font-size:13px;"><strong>Activos liberados:</strong></p>
   <ul style="font-size:13px;color:#374151;">{% for a in activos_lista %}<li>{{ a }}</li>{% endfor %}</ul>
   {% endif %}
+  {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
 </div>
 """,
@@ -143,6 +162,7 @@ _TEMPLATES: dict[str, str] = {
     <tr><td class="k">Descripción</td><td class="v">{{ descripcion }}</td></tr>
     <tr><td class="k">Fecha</td><td class="v">{{ fecha }}</td></tr>
   </table>
+  {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
 </div>
 """,
@@ -157,6 +177,7 @@ _TEMPLATES: dict[str, str] = {
     <tr><td class="k">Fecha cierre</td><td class="v">{{ fecha }}</td></tr>
     <tr><td class="k">Estado actual</td><td class="v">{{ estado_final }}</td></tr>
   </table>
+  {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
 </div>
 """,
@@ -175,16 +196,40 @@ _SUBJECTS = {
 
 
 def _render(template_name: str, ctx: dict[str, Any]) -> tuple[str, str]:
-    """Renderiza (subject, html_body) para el template y contexto dados."""
+    """Renderiza (subject, html_body) para el template y contexto dados.
+
+    El bloque del operador ("Ejecutado por: X") se renderiza primero como
+    sub-template para evitar tener que repetirlo en cada plantilla. Pasamos
+    el HTML resultante como `operator_block` al template principal.
+    """
     if template_name not in _TEMPLATES:
         raise ValueError(f"Template desconocido: {template_name}")
-    body = _jinja_env.from_string(_TEMPLATES[template_name]).render(style=_BASE_STYLE, **ctx)
+    # `operator_block` ya fue renderizado por Jinja con autoescape (los
+    # nombres del operador / reply_to están escapados internamente).
+    # Lo marcamos como Markup para que el outer render NO lo re-escape
+    # (perderíamos el HTML). Misma lógica para el bloque de estilos.
+    operator_block = _jinja_env.from_string(_OPERATOR_BLOCK).render(**ctx)
+    body = _jinja_env.from_string(_TEMPLATES[template_name]).render(
+        style=Markup(_BASE_STYLE),
+        operator_block=Markup(operator_block),
+        **ctx,
+    )
     subject = _SUBJECTS[template_name].format(**{k: ctx.get(k, "") for k in ("codigo", "persona_nombre")})
     return subject, body
 
 
-async def _send_via_smtp(to: list[str], subject: str, html: str) -> None:
-    """Envía vía SMTP usando aiosmtplib. Maneja errores sin propagar."""
+async def _send_via_smtp(
+    to: list[str],
+    subject: str,
+    html: str,
+    reply_to: str | None = None,
+) -> None:
+    """Envía vía SMTP usando aiosmtplib. Maneja errores sin propagar.
+
+    `reply_to`: email del usuario que ejecutó la acción de negocio
+    (técnico, admin, etc.). Cuando un destinatario responde, el correo va
+    a esta dirección — NO al sender corporativo (noreply).
+    """
     if not settings.EMAIL_ENABLED or not settings.SMTP_HOST:
         log.info("email.silenced",
                  reason="EMAIL_ENABLED=False or SMTP_HOST empty",
@@ -200,6 +245,8 @@ async def _send_via_smtp(to: list[str], subject: str, html: str) -> None:
     msg = EmailMessage()
     msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
     msg["To"] = ", ".join(to)
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg["Subject"] = subject
     msg.set_content("Tu cliente no soporta HTML. Abre este correo en una vista compatible.")
     msg.add_alternative(html, subtype="html")
@@ -215,7 +262,7 @@ async def _send_via_smtp(to: list[str], subject: str, html: str) -> None:
             start_tls=settings.SMTP_STARTTLS and settings.SMTP_PORT != 465,
             timeout=10,
         )
-        log.info("email.sent", to=to, subject=subject)
+        log.info("email.sent", to=to, subject=subject, reply_to=reply_to)
     except Exception as e:  # noqa: BLE001
         # Best-effort: NO propagamos para que el fallo SMTP no aborte
         # la transacción de negocio que ya se commiteó.
@@ -234,21 +281,42 @@ async def send_notification(
     ctx: dict[str, Any],
     to: Iterable[str] = (),
     cc_admins: bool = True,
+    reply_to: str | None = None,
+    operator_name: str | None = None,
+    operator_role: str | None = None,
 ) -> None:
     """
     API pública del servicio. Renderiza la plantilla, junta destinatarios
     (persona involucrada + admins según config) y dispara el SMTP en background.
 
+    Args:
+      template_name: clave en _TEMPLATES.
+      ctx: contexto Jinja2 para el template.
+      to: destinatarios explícitos (típicamente persona involucrada).
+      cc_admins: si True, añade NOTIFY_ADMIN_EMAILS.
+      reply_to: email del usuario que ejecutó la acción. El "responder" del
+                destinatario llega aquí, no al noreply corporativo.
+      operator_name: nombre del operador (técnico/admin) que ejecutó. Se
+                     inyecta en el contexto del template para mostrar la
+                     firma "Ejecutado por: ...".
+      operator_role: rol del operador (SUPER_ADMIN, ADMIN_TI, TECNICO).
+
     NO bloquea la transacción del caller: si falla el SMTP solo se loguea.
-    Usar `asyncio.create_task(...)` o similar para no esperar al envío.
     """
     recipients = list({e for e in [*to, *(_admin_recipients() if cc_admins else [])] if e})
     if not recipients:
         log.debug("email.no_recipients", template=template_name)
         return
-    subject, html = _render(template_name, ctx)
+    # Inyectar info del operador en el contexto del template
+    enriched_ctx = {
+        **ctx,
+        "operator_name": operator_name or "Sistema",
+        "operator_role": operator_role or "",
+        "reply_to": reply_to or "",
+    }
+    subject, html = _render(template_name, enriched_ctx)
     # Fire-and-forget: el caller no espera el envío SMTP.
-    asyncio.create_task(_send_via_smtp(recipients, subject, html))
+    asyncio.create_task(_send_via_smtp(recipients, subject, html, reply_to=reply_to))
 
 
 def send_notification_sync_for_tests(
