@@ -1,0 +1,192 @@
+# =========================================================================
+# Stack completo de despliegue (repos separados):
+#   Postgres + Redis + Backend (FastAPI/gunicorn) + Frontend (Nginx) + Caddy.
+#
+# LAYOUT ESPERADO (los dos repos como hermanos):
+#   <parent>/
+#   ├── inventario-ti-backend/    (este repo; compose en deploy/)
+#   └── inventario-ti-frontend/   (git clone hermano)
+#
+# USO (desde inventario-ti-backend/deploy):
+#   1. cp .env.example .env  &&  edita los secretos (ver DEPLOYMENT.md)
+#   2. docker compose up -d --build
+#   3. DOMAIN=localhost  -> https://localhost (cert autofirmado)
+#      DOMAIN=tu.dominio -> Let's Encrypt automático (puertos 80/443 abiertos)
+#
+# Red: solo Caddy expone 80/443. Backend, DB y Redis son internos.
+# =========================================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "128mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--requirepass"
+      - "${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # MailHog (solo dev): captura SMTP, UI en :8025. `docker compose --profile dev up -d`
+  mailhog:
+    image: mailhog/mailhog:latest
+    profiles: ["dev"]
+    restart: unless-stopped
+    ports: ["8025:8025"]
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+
+  backend:
+    build:
+      context: ..                       # raíz del repo inventario-ti-backend
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      PROJECT_NAME: ${PROJECT_NAME:-Sistema Inventario TI}
+      ENVIRONMENT: production
+      DEBUG: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      POSTGRES_SERVER: db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: 5432
+      DB_ECHO: "false"
+      SECRET_KEY: ${SECRET_KEY}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      ACCOUNT_LOCKOUT_THRESHOLD: ${ACCOUNT_LOCKOUT_THRESHOLD:-5}
+      ACCOUNT_LOCKOUT_MINUTES: ${ACCOUNT_LOCKOUT_MINUTES:-15}
+      PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-10}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-["http://localhost","https://localhost"]}
+      RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-5/minute}
+      RATE_LIMIT_DEFAULT: ${RATE_LIMIT_DEFAULT:-100/minute}
+      PAGINATION_MAX_LIMIT: ${PAGINATION_MAX_LIMIT:-200}
+      REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD}@redis:6379/0}
+      AUTH_CACHE_TTL_SECONDS: ${AUTH_CACHE_TTL_SECONDS:-30}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS: ${SMTP_TLS:-true}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-noreply@lombardi.local}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Sistema Inventario Lombardi}
+      NOTIFY_ADMIN_EMAILS: ${NOTIFY_ADMIN_EMAILS:-}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-true}
+      FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY}
+      SUPER_ADMIN_USERNAME: ${SUPER_ADMIN_USERNAME:-sa}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-admin@example.com}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
+      # PRODUCCIÓN: déjalo en false. El seed mínimo canónico corre SIEMPRE
+      # (estados/tipos), sin data de demo.
+      SEED_DEMO: ${SEED_DEMO:-false}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-10}
+    volumes:
+      - adjuntos_data:/app/uploads
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ../../inventario-ti-frontend   # repo hermano
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    restart: always
+    depends_on:
+      backend: { condition: service_healthy }
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider --tries=1 http://127.0.0.1/healthz || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend: { condition: service_healthy }
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 256
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  adjuntos_data:

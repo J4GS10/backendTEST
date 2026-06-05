@@ -8,6 +8,9 @@ alembic upgrade head
 echo "==> Bootstrap inicial (idempotente)..."
 python -m app.init_prod || echo "WARN: init_prod falló (probablemente ya está inicializado)"
 
+echo "==> Seed mínimo canónico (estados, tipos de movimiento; idempotente, prod-safe)..."
+python -m app.seed_min || echo "WARN: seed_min falló (probablemente ya está cargado)"
+
 if [ "${SEED_DEMO:-false}" = "true" ]; then
     if [ "${ENVIRONMENT:-development}" = "production" ]; then
         echo "ERROR: SEED_DEMO=true es incompatible con ENVIRONMENT=production." >&2
