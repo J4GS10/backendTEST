@@ -141,22 +141,25 @@ async def create_modelo(
 @router.get("/modelos", response_model=List[ModeloResponse])
 async def list_modelos(
     marca_id: int = Query(..., description="ID de la Marca"),
+    tipo_id: int | None = Query(None, description="Filtra por tipo de componente (cascada Marca+Tipo)"),
     service: CatalogService = Depends(get_service),
 ):
-    return await service.list_modelos(marca_id)
+    return await service.list_modelos(marca_id, tipo_id=tipo_id)
 
 
 @router.get("/modelos-flat", response_model=List[ModeloFlatResponse])
 async def list_modelos_flat(
     q: str | None = Query(None, max_length=64, description="Filtro por nombre de modelo o marca"),
     limit: int = Query(500, ge=1, le=1000),
+    tipo_id: int | None = Query(None, description="Filtra modelos por tipo de componente (cascada)"),
     service: CatalogService = Depends(get_service),
 ):
     """
     Devuelve modelos con marca embebida en una sola consulta. Pensado para
-    selects del frontend (evita N requests, uno por cada marca).
+    selects del frontend (evita N requests). Con `tipo_id` filtra a los modelos
+    de ese tipo (cascada: elijo Mouse → solo modelos de mouse).
     """
-    return await service.list_modelos_flat(q=q, limit=limit)
+    return await service.list_modelos_flat(q=q, limit=limit, tipo_id=tipo_id)
 
 
 @router.get("/modelos/{id}", response_model=ModeloResponse)

@@ -4,11 +4,12 @@ campos sensibles (Fernet).
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, MultiFernet, InvalidToken
 from jose import jwt
 from passlib.context import CryptContext
 
@@ -26,12 +27,30 @@ pwd_context = CryptContext(
     argon2__parallelism=2,
 )
 
+# Hash dummy precomputado (una vez por proceso). Se usa para igualar el tiempo
+# de respuesta del login cuando el usuario NO existe, cerrando el oráculo de
+# timing que permitía enumerar cuentas (ver login.py::login_access_token).
+_DUMMY_PASSWORD_HASH = pwd_context.hash("timing-equalization-dummy-password")
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
         return pwd_context.verify(plain_password, hashed_password)
     except Exception:
         return False
+
+
+def verify_password_dummy() -> None:
+    """
+    Ejecuta una verificación argon2 contra un hash dummy para gastar el mismo
+    tiempo de CPU que un verify real. Llamar cuando el usuario no existe, así
+    el atacante no distingue 'usuario inexistente' de 'password incorrecta'
+    por la latencia de la respuesta.
+    """
+    try:
+        pwd_context.verify("timing", _DUMMY_PASSWORD_HASH)
+    except Exception:
+        pass
 
 
 def get_password_hash(password: str) -> str:
@@ -116,16 +135,124 @@ def create_refresh_token(subject: str | Any, role: str) -> str:
     return _create_token(subject, role, "refresh", delta)
 
 
+def create_2fa_challenge_token(username: str) -> str:
+    """
+    Token efímero que prueba "este usuario pasó la contraseña" entre el paso 1
+    (login) y el paso 2 (verificación del 2º factor). NO sirve para acceder a la
+    API; solo se acepta en /login/2fa/verify.
+    """
+    from jose import jwt as _jwt
+    now = datetime.now(timezone.utc)
+    payload = {
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.TWO_FACTOR_CHALLENGE_EXPIRE_MINUTES),
+        "sub": str(username),
+        "type": "2fa",
+        "jti": secrets.token_hex(16),
+    }
+    return _jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def decode_2fa_challenge(token: str) -> Optional[str]:
+    """Devuelve el username si el challenge es válido y del tipo correcto; si no, None."""
+    from jose import jwt as _jwt, JWTError
+    try:
+        payload = _jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("type") != "2fa":
+        return None
+    return payload.get("sub")
+
+
+# =========================================================================
+# PASSWORD RESET TOKENS (olvidé mi contraseña)
+#
+# Se genera un token aleatorio de alta entropía que se ENVÍA por email al
+# correo corporativo del usuario, pero en la BD solo se guarda su hash SHA-256.
+# Así, una fuga de la BD no expone tokens utilizables. El token es de un solo
+# uso y expira. (No lleva salt porque no es una contraseña adivinable: son 256
+# bits aleatorios, inmunes a fuerza bruta / rainbow tables.)
+# =========================================================================
+def generate_reset_token() -> tuple[str, str]:
+    """Devuelve (token_plano, token_hash). El plano va al email; el hash a la BD."""
+    token = secrets.token_urlsafe(32)
+    return token, hash_reset_token(token)
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# =========================================================================
+# 2FA / MFA — TOTP (app autenticadora) + Email-OTP + códigos de recuperación
+#
+# El secreto TOTP se guarda CIFRADO (Fernet) en la BD. Los códigos OTP de email
+# y los de recuperación se guardan solo como hash SHA-256 (de un solo uso).
+# =========================================================================
+def generate_totp_secret() -> str:
+    """Secreto base32 para TOTP."""
+    import pyotp
+    return pyotp.random_base32()
+
+
+def totp_provisioning_uri(secret: str, username: str, issuer: str) -> str:
+    """otpauth:// URI para que la app autenticadora lo escanee (QR)."""
+    import pyotp
+    return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer)
+
+
+def verify_totp(secret: str, code: str) -> bool:
+    """Valida un código TOTP con tolerancia de ±1 ventana (desfase de reloj)."""
+    import pyotp
+    if not secret or not code:
+        return False
+    try:
+        return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def generate_numeric_otp(digits: int = 6) -> str:
+    """Código numérico aleatorio (para Email-OTP)."""
+    return "".join(secrets.choice("0123456789") for _ in range(digits))
+
+
+def generate_recovery_codes(n: int = 8) -> list[str]:
+    """Códigos de recuperación legibles (xxxx-xxxx) de un solo uso."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sin O/0/I/1 ambiguos
+    codes = []
+    for _ in range(n):
+        raw = "".join(secrets.choice(alphabet) for _ in range(8))
+        codes.append(f"{raw[:4]}-{raw[4:]}")
+    return codes
+
+
+def hash_code(code: str) -> str:
+    """Hash SHA-256 para OTP de email y códigos de recuperación (normaliza may/espacios)."""
+    return hashlib.sha256(code.strip().upper().encode("utf-8")).hexdigest()
+
+
 # =========================================================================
 # FIELD ENCRYPTION (Fernet) — para LIC_Clave_Activacion u otros campos
+#
+# Rotación de clave: FIELD_ENCRYPTION_KEY admite una lista separada por comas.
+# La PRIMERA clave es la primaria (se usa para cifrar); las siguientes son
+# claves legadas que solo se intentan al descifrar. Esto permite rotar sin
+# re-cifrar todo de golpe:
+#   1) generar clave nueva, ponerla PRIMERA: FIELD_ENCRYPTION_KEY=nueva,vieja
+#   2) (opcional) re-cifrar registros existentes en background
+#   3) eliminar la clave vieja cuando ya no queden valores cifrados con ella
 # =========================================================================
-_fernet: Optional[Fernet] = None
+_fernet: Optional[MultiFernet] = None
 
 
-def _get_fernet() -> Optional[Fernet]:
+def _get_fernet() -> Optional[MultiFernet]:
     global _fernet
     if _fernet is None and settings.FIELD_ENCRYPTION_KEY:
-        _fernet = Fernet(settings.FIELD_ENCRYPTION_KEY.encode())
+        keys = [k.strip() for k in settings.FIELD_ENCRYPTION_KEY.split(",") if k.strip()]
+        if keys:
+            _fernet = MultiFernet([Fernet(k.encode()) for k in keys])
     return _fernet
 
 
@@ -154,11 +281,14 @@ def decrypt_field(value: str | None) -> str | None:
     try:
         return fernet.decrypt(value.encode()).decode()
     except InvalidToken:
-        # Probablemente el valor no estaba cifrado (legado) o fue manipulado.
-        # Lo logueamos para que aparezca como señal de tampering pero seguimos
-        # devolviendo el valor (compatibilidad con datos pre-cifrado).
+        # Valor no descifrable: o es legado pre-cifrado, o fue manipulado.
         import structlog
         structlog.get_logger("security").warning(
             "decrypt_field.invalid_token — valor no descifrable; posible tampering o legado."
         )
+        # En PRODUCCIÓN fallamos cerrado: no servimos un valor potencialmente
+        # manipulado como si fuera legítimo. En dev/staging mantenemos la
+        # tolerancia para no romper datasets legados durante una migración.
+        if settings.IS_PRODUCTION:
+            raise ValueError("FIELD_DECRYPT_FAILED")
         return value

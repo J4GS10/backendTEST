@@ -86,6 +86,9 @@ class Movimiento(Base):
         ),
         Index("ix_movimiento_persona", "PER_Persona"),
         Index("ix_movimiento_area", "ARE_Area"),
+        # Índice general por activo: acelera el historial completo (todos los
+        # movimientos de un activo, no solo el vigente que cubre el índice parcial).
+        Index("ix_movimiento_activo", "ACT_Activo"),
     )
 
 
@@ -136,6 +139,16 @@ class Mantenimiento(Base):
         CheckConstraint(
             '"MAN_Costo_Total" >= 0', name="ck_mantenimiento_costo_no_negativo"
         ),
+        # Índice parcial UNIQUE: solo un mantenimiento ABIERTO por activo
+        # (garantía de concurrencia a nivel BD, espejo del de INV_MOVIMIENTO).
+        Index(
+            "uq_mantenimiento_activo_abierto",
+            "ACT_Activo",
+            unique=True,
+            postgresql_where=(MAN_Fecha_Cierre.is_(None)),
+            sqlite_where=(MAN_Fecha_Cierre.is_(None)),
+        ),
+        Index("ix_mantenimiento_activo", "ACT_Activo"),
     )
 
 

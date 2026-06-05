@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import structlog
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 
 log = structlog.get_logger("service")
 
@@ -28,6 +29,17 @@ def internal_error(exc: Exception, code: str = "INTERNAL_ERROR") -> HTTPExceptio
         except Exception as e:
             await self.db.rollback()
             raise internal_error(e)
+
+    Consistencia: una violación de integridad (FK/UNIQUE/CHECK) que llegue
+    aquí se traduce SIEMPRE a 409, nunca a 500 — así ningún service que use
+    este helper expone un 500 ante un conflicto de datos esperable.
     """
+    if isinstance(exc, IntegrityError):
+        log.warning(
+            "service.integrity_error",
+            code=code,
+            error=str(exc.orig) if hasattr(exc, "orig") else str(exc),
+        )
+        return HTTPException(status_code=409, detail="INTEGRITY_CONSTRAINT_VIOLATED")
     log.error("service.internal_error", code=code, error=str(exc), exc_type=type(exc).__name__)
     return HTTPException(status_code=500, detail=code)

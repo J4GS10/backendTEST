@@ -39,6 +39,24 @@ class Settings(BaseSettings):
     ACCOUNT_LOCKOUT_THRESHOLD: int = 5
     ACCOUNT_LOCKOUT_MINUTES: int = 15
 
+    # Password reset (olvidé mi contraseña) — el token se envía SOLO al correo
+    # corporativo registrado del usuario; expira y es de un solo uso.
+    PASSWORD_RESET_EXPIRE_MINUTES: int = 30
+    # Throttle POR CUENTA: no se emite otro correo de reset si ya se solicitó uno
+    # en esta ventana (anti-bombardeo de emails a una víctima desde IPs rotativas).
+    PASSWORD_RESET_REQUEST_COOLDOWN_MINUTES: int = 2
+
+    # 2FA / MFA
+    TWO_FACTOR_ISSUER: str = "Inventario Lombardi"   # nombre que muestra la app TOTP
+    TWO_FACTOR_EMAIL_OTP_EXPIRE_MINUTES: int = 10    # validez del código por email
+    TWO_FACTOR_CHALLENGE_EXPIRE_MINUTES: int = 5     # validez del "challenge" tras la contraseña
+    TWO_FACTOR_MAX_ATTEMPTS: int = 5                 # intentos por código de email
+    TWO_FACTOR_RECOVERY_CODES: int = 8               # códigos de recuperación generados
+    # Roles para los que 2FA es OBLIGATORIO (deben enrolarse; CSV de roles).
+    TWO_FACTOR_REQUIRED_ROLES: str = "SUPER_ADMIN,ADMIN_TI"
+    # Base pública del frontend para construir el enlace de restablecimiento.
+    FRONTEND_BASE_URL: str = "https://localhost"
+
     # Password policy
     PASSWORD_MIN_LENGTH: int = 10
     PASSWORD_REQUIRE_UPPER: bool = True
@@ -61,6 +79,18 @@ class Settings(BaseSettings):
     # Clave Fernet para cifrar campos sensibles (LIC_Clave_Activacion).
     # Generar con: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     FIELD_ENCRYPTION_KEY: str | None = None
+
+    # =========================================================================
+    # ADJUNTOS (archivos por activo: factura, foto, acta firmada)
+    # Almacenamiento en disco local (volumen Docker). Para migrar a S3/MinIO,
+    # reemplazar la capa de storage en services/attachments.py.
+    # =========================================================================
+    UPLOAD_DIR: str = "/app/uploads"
+    MAX_UPLOAD_SIZE_MB: int = 10
+    # Extensiones permitidas (defensa: evita subir ejecutables/scripts).
+    ALLOWED_UPLOAD_EXTENSIONS: List[str] = [
+        ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".docx", ".xlsx", ".csv", ".txt",
+    ]
 
     # =========================================================================
     # SMTP — notificaciones por email

@@ -253,3 +253,65 @@ class CoreService:
         except Exception as e:
             await self.db.rollback()
             raise internal_error(e, "TRANSACTION_FAILED")
+
+    # =================================================================
+    # ESPECIFICACIONES (características del equipo: RAM, disco, batería…)
+    # =================================================================
+    async def list_especificaciones(self, activo_id: uuid.UUID):
+        if not await self.repo.get_by_id_simple(activo_id):
+            raise HTTPException(404, "ASSET_NOT_FOUND")
+        return await self.repo.list_especificaciones(activo_id)
+
+    async def add_especificacion(self, activo_id, tes_id, valor, usuario_id=None, ip=None):
+        try:
+            if not await self.repo.get_by_id_simple(activo_id):
+                raise HTTPException(404, "ASSET_NOT_FOUND")
+            if not await self.cat_repo.get_tipo_especificacion_by_id(tes_id):
+                raise HTTPException(404, "SPECIFICATION_TYPE_NOT_FOUND")
+            obj = await self.repo.add_especificacion(activo_id, tes_id, valor)
+            await self.gov_repo.create_audit_log(
+                "CREATE", "INV_ESPECIFICACION",
+                {"activo": str(activo_id), "tipo": tes_id, "valor": valor[:120]},
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+            return obj
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            # uq_espec_activo_tipo: no se puede repetir el mismo tipo en un activo.
+            raise internal_error(e, "SPECIFICATION_ALREADY_EXISTS_FOR_ASSET")
+
+    async def update_especificacion(self, esp_id, valor, usuario_id=None, ip=None):
+        try:
+            if not await self.repo.get_especificacion(esp_id):
+                raise HTTPException(404, "SPECIFICATION_NOT_FOUND")
+            await self.repo.update_especificacion(esp_id, valor)
+            await self.gov_repo.create_audit_log(
+                "UPDATE", "INV_ESPECIFICACION", {"id": esp_id, "valor": valor[:120]},
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")
+
+    async def delete_especificacion(self, esp_id, usuario_id=None, ip=None):
+        try:
+            obj = await self.repo.get_especificacion(esp_id)
+            if not obj:
+                raise HTTPException(404, "SPECIFICATION_NOT_FOUND")
+            await self.repo.delete_especificacion(esp_id)
+            await self.gov_repo.create_audit_log(
+                "DELETE", "INV_ESPECIFICACION", {"id": esp_id},
+                usuario_id=usuario_id, ip_origen=ip,
+            )
+            await self.db.commit()
+        except HTTPException:
+            await self.db.rollback(); raise
+        except Exception as e:
+            await self.db.rollback()
+            raise internal_error(e, "TRANSACTION_FAILED")

@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.schemas.common import PaginatedResponse
 from app.schemas.core import (
     ActivoCreate, ActivoDetailResponse, ActivoFilter, ActivoResponse, ActivoUpdate,
+    EspecificacionCreate, EspecificacionDetalle, EspecificacionValorUpdate,
 )
 from app.services.core import CoreService
 
@@ -22,6 +23,48 @@ ADMIN = [Depends(require_admin)]
 
 def get_service(db: AsyncSession = Depends(get_db)) -> CoreService:
     return CoreService(db)
+
+
+def _ctx(request: Request, user: CurrentUser) -> dict:
+    return {"usuario_id": user.USU_Usuario, "ip": get_client_ip(request)}
+
+
+# =====================================================================
+# ESPECIFICACIONES (características del equipo: RAM, disco, batería, etc.)
+# =====================================================================
+@router.get("/activos/{activo_id}/especificaciones", response_model=List[EspecificacionDetalle])
+async def list_especificaciones(activo_id: uuid.UUID, service: CoreService = Depends(get_service)):
+    return await service.list_especificaciones(activo_id)
+
+
+@router.post("/activos/{activo_id}/especificaciones", response_model=EspecificacionDetalle,
+             status_code=201, dependencies=OPERATIVO)
+async def add_especificacion(
+    activo_id: uuid.UUID, schema: EspecificacionCreate, request: Request, current_user: CurrentUser,
+    service: CoreService = Depends(get_service),
+):
+    await service.add_especificacion(
+        activo_id, schema.TES_Tipo_Especificacion, schema.ESP_Valor, **_ctx(request, current_user)
+    )
+    # Devolvemos la fila enriquecida recién creada.
+    specs = await service.list_especificaciones(activo_id)
+    return next((s for s in specs if s["TES_Tipo_Especificacion"] == schema.TES_Tipo_Especificacion), specs[-1])
+
+
+@router.patch("/especificaciones/{esp_id}", status_code=204, dependencies=OPERATIVO)
+async def update_especificacion(
+    esp_id: int, schema: EspecificacionValorUpdate, request: Request, current_user: CurrentUser,
+    service: CoreService = Depends(get_service),
+):
+    await service.update_especificacion(esp_id, schema.ESP_Valor, **_ctx(request, current_user))
+
+
+@router.delete("/especificaciones/{esp_id}", status_code=204, dependencies=OPERATIVO)
+async def delete_especificacion(
+    esp_id: int, request: Request, current_user: CurrentUser,
+    service: CoreService = Depends(get_service),
+):
+    await service.delete_especificacion(esp_id, **_ctx(request, current_user))
 
 
 @router.post("/activos", response_model=ActivoResponse, status_code=201, dependencies=OPERATIVO)

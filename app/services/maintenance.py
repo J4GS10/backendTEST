@@ -120,8 +120,9 @@ class MaintenanceService:
             estado_reparacion = (await self.db.execute(
                 select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike("%Reparación%"))
             )).scalar_one_or_none()
-            if estado_reparacion:
-                activo.EOP_Estado_Operativo = estado_reparacion.EOP_Estado_Operativo
+            if estado_reparacion is None:
+                raise HTTPException(500, "SYSTEM_CONFIG_ERROR_MISSING_OPERATIONAL_STATE")
+            activo.EOP_Estado_Operativo = estado_reparacion.EOP_Estado_Operativo
 
             mantenimiento = await self.repo.create_mantenimiento(schema)
             await self.gov_repo.create_audit_log(
@@ -175,6 +176,11 @@ class MaintenanceService:
             return mantenimiento
         except HTTPException:
             await self.db.rollback(); raise
+        except IntegrityError:
+            # Choque del índice único parcial bajo concurrencia: otro request
+            # abrió un ticket para el mismo activo entre el SELECT y el INSERT.
+            await self.db.rollback()
+            raise HTTPException(409, "ASSET_ALREADY_HAS_OPEN_MAINTENANCE_TICKET")
         except Exception as e:
             await self.db.rollback()
             raise internal_error(e, "TRANSACTION_FAILED")
@@ -264,10 +270,11 @@ class MaintenanceService:
             estado_nuevo = (await self.db.execute(
                 select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike(nuevo_nombre))
             )).scalar_one_or_none()
-            if estado_nuevo:
-                activo = await self.core_repo.get_by_id_simple(mant.ACT_Activo)
-                if activo:
-                    activo.EOP_Estado_Operativo = estado_nuevo.EOP_Estado_Operativo
+            if estado_nuevo is None:
+                raise HTTPException(500, "SYSTEM_CONFIG_ERROR_MISSING_OPERATIONAL_STATE")
+            activo = await self.core_repo.get_by_id_simple(mant.ACT_Activo)
+            if activo:
+                activo.EOP_Estado_Operativo = estado_nuevo.EOP_Estado_Operativo
 
             await self.gov_repo.create_audit_log(
                 "CLOSE", "INV_MANTENIMIENTO",

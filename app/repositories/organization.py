@@ -164,6 +164,24 @@ class UsuarioRepository:
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
+    async def get_by_username_or_email(self, identifier: str) -> Optional[Usuario]:
+        """
+        Resuelve un usuario por su username o por el correo corporativo de su
+        persona. Usado por el flujo de restablecimiento de contraseña.
+        """
+        from app.models.organization import Persona
+        u = await self.get_by_username(identifier)
+        if u:
+            return u
+        query = (
+            select(Usuario)
+            .options(selectinload(Usuario.persona))
+            .join(Persona, Persona.PER_Persona == Usuario.PER_Persona)
+            .where(Persona.PER_Email_Corporativo == identifier)
+        )
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
+
     async def create(self, schema: UsuarioCreate) -> Usuario:
         hashed_pwd = get_password_hash(schema.USU_Password)
         
@@ -184,18 +202,21 @@ class UsuarioRepository:
 
     async def update(self, id: uuid.UUID, schema: UsuarioUpdate) -> Usuario:
         update_data = schema.model_dump(exclude_unset=True)
-        
+
         if "USU_Password" in update_data:
             update_data["USU_Password_Hash"] = get_password_hash(update_data.pop("USU_Password"))
-            
-        query = (
-            update(Usuario)
-            .where(Usuario.USU_Usuario == id)
-            .values(**update_data)
-        )
-        await self.db.execute(query)
-        await self.db.flush()
-        
+
+        # Sin campos que actualizar → no-op (evita "UPDATE ... SET  WHERE",
+        # que es un error de sintaxis SQL). Consistente con los demás repos.
+        if update_data:
+            query = (
+                update(Usuario)
+                .where(Usuario.USU_Usuario == id)
+                .values(**update_data)
+            )
+            await self.db.execute(query)
+            await self.db.flush()
+
         return await self.get_by_id(id)
     
     async def count_active_super_admins(self) -> int:

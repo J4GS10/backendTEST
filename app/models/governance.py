@@ -46,7 +46,13 @@ class ConfiguracionSistema(Base):
     SYS_Logo_URL = Column(String(500), nullable=True)
     SYS_Color_Primario = Column(String(10), default="#1e293b")
     SYS_Color_Secundario = Column(String(10), default="#3b82f6")
+    # Color del fondo de la app (independiente del primario, que solo tiñe el
+    # brillo del gradiente). Default: slate oscuro, no negro puro.
+    SYS_Color_Fondo = Column(String(10), default="#0f172a")
     SYS_Idioma_Defecto = Column(String(2), default="es")
+    # Datos del encabezado de las actas (Word/PDF).
+    SYS_Codigo_Formulario = Column(String(50), nullable=True)
+    SYS_Ciudad = Column(String(60), nullable=True)
 
 
 # ==========================================
@@ -84,6 +90,63 @@ class IdempotencyKey(Base):
     IDK_Response_Status = Column(Integer, nullable=False)
     IDK_Response_Body = Column(JSON, nullable=True)
     IDK_Creada_En = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+
+
+class PasswordResetToken(Base):
+    """
+    Token de restablecimiento de contraseña (flujo "olvidé mi contraseña").
+    Se guarda SOLO el hash SHA-256 del token; el token plano se envía por email
+    al correo corporativo del usuario. De un solo uso (PRT_Usado) y con expiración.
+    """
+    __tablename__ = "SYS_PASSWORD_RESET"
+
+    PRT_Id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    PRT_Token_Hash = Column(String(64), unique=True, nullable=False, index=True)
+    PRT_Expira = Column(DateTime, nullable=False, index=True)
+    PRT_Usado = Column(Boolean, default=False, nullable=False)
+    PRT_Creado_En = Column(DateTime, server_default=func.now(), nullable=False)
+
+    USU_Usuario = Column(
+        Uuid,
+        ForeignKey("INV_USUARIO.USU_Usuario", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+
+class TwoFactorCode(Base):
+    """
+    Código OTP de un solo uso para 2FA por EMAIL (se envía en cada login).
+    Se guarda solo el hash; expira y tiene tope de intentos.
+    """
+    __tablename__ = "SYS_2FA_CODE"
+
+    TFC_Id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    TFC_Code_Hash = Column(String(64), nullable=False, index=True)
+    TFC_Expira = Column(DateTime, nullable=False, index=True)
+    TFC_Usado = Column(Boolean, default=False, nullable=False)
+    TFC_Intentos = Column(Integer, default=0, nullable=False)
+    TFC_Creado_En = Column(DateTime, server_default=func.now(), nullable=False)
+
+    USU_Usuario = Column(
+        Uuid, ForeignKey("INV_USUARIO.USU_Usuario", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+
+
+class RecoveryCode(Base):
+    """Código de recuperación 2FA (un solo uso, hash). Para cuando se pierde el 2º factor."""
+    __tablename__ = "SYS_2FA_RECOVERY"
+
+    TRC_Id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    TRC_Code_Hash = Column(String(64), nullable=False, index=True)
+    TRC_Usado = Column(Boolean, default=False, nullable=False)
+    TRC_Creado_En = Column(DateTime, server_default=func.now(), nullable=False)
+
+    USU_Usuario = Column(
+        Uuid, ForeignKey("INV_USUARIO.USU_Usuario", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
 
 
 class TokenRevocado(Base):

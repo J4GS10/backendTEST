@@ -1,12 +1,12 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import update, func
+from sqlalchemy import update, func, delete
 from typing import List, Optional
 import uuid
 
 from app.models.core import Activo, Especificacion
-from app.models.catalogs import Modelo, Marca, TipoActivo, EstadoOperativo
+from app.models.catalogs import Modelo, Marca, TipoActivo, EstadoOperativo, TipoEspecificacion
 from app.schemas.core import ActivoCreate, EspecificacionCreate, ActivoUpdate, ActivoFilter
 
 
@@ -152,3 +152,57 @@ class CoreRepository:
 
         result = await self.db.execute(query)
         return result.scalars().all(), total
+
+    # =================================================================
+    # ESPECIFICACIONES (características: RAM, disco, batería, etc.)
+    # =================================================================
+    async def list_especificaciones(self, activo_id: uuid.UUID) -> list[dict]:
+        """Lista enriquecida (con nombre + unidad del tipo) de un activo."""
+        q = (
+            select(
+                Especificacion.ESP_Especificacion,
+                Especificacion.TES_Tipo_Especificacion,
+                TipoEspecificacion.TES_Nombre,
+                TipoEspecificacion.TES_Unidad_Medida,
+                Especificacion.ESP_Valor,
+            )
+            .join(TipoEspecificacion,
+                  TipoEspecificacion.TES_Tipo_Especificacion == Especificacion.TES_Tipo_Especificacion)
+            .where(Especificacion.ACT_Activo == activo_id)
+            .order_by(TipoEspecificacion.TES_Nombre)
+        )
+        rows = (await self.db.execute(q)).all()
+        return [
+            {
+                "ESP_Especificacion": r[0],
+                "TES_Tipo_Especificacion": r[1],
+                "TES_Nombre": r[2],
+                "TES_Unidad_Medida": r[3],
+                "ESP_Valor": r[4],
+            }
+            for r in rows
+        ]
+
+    async def get_especificacion(self, esp_id: int) -> Optional[Especificacion]:
+        res = await self.db.execute(
+            select(Especificacion).where(Especificacion.ESP_Especificacion == esp_id)
+        )
+        return res.scalar_one_or_none()
+
+    async def add_especificacion(self, activo_id: uuid.UUID, tes_id: int, valor: str) -> Especificacion:
+        obj = Especificacion(ACT_Activo=activo_id, TES_Tipo_Especificacion=tes_id, ESP_Valor=valor)
+        self.db.add(obj)
+        await self.db.flush()
+        return obj
+
+    async def update_especificacion(self, esp_id: int, valor: str) -> None:
+        await self.db.execute(
+            update(Especificacion).where(Especificacion.ESP_Especificacion == esp_id).values(ESP_Valor=valor)
+        )
+        await self.db.flush()
+
+    async def delete_especificacion(self, esp_id: int) -> None:
+        await self.db.execute(
+            delete(Especificacion).where(Especificacion.ESP_Especificacion == esp_id)
+        )
+        await self.db.flush()

@@ -10,7 +10,10 @@ class ConfigUpdate(BaseModel):
     SYS_Logo_URL: Optional[str] = Field(None, max_length=500)
     SYS_Color_Primario: Optional[str] = Field(None, pattern="^#([0-9a-fA-F]{3}){1,2}$")
     SYS_Color_Secundario: Optional[str] = Field(None, pattern="^#([0-9a-fA-F]{3}){1,2}$")
+    SYS_Color_Fondo: Optional[str] = Field(None, pattern="^#([0-9a-fA-F]{3}){1,2}$")
     SYS_Idioma_Defecto: Optional[str] = Field(None, max_length=2)
+    SYS_Codigo_Formulario: Optional[str] = Field(None, max_length=50)
+    SYS_Ciudad: Optional[str] = Field(None, max_length=60)
 
 
 class ConfigResponse(ConfigUpdate):

@@ -15,6 +15,13 @@ os.environ["RATE_LIMIT_DEFAULT"] = "100000/minute"
 # Desactivar Redis en tests: el container puede tenerlo configurado, pero pytest
 # no debe intentar hablar con un loop muerto. cache_get/set son no-op si REDIS_URL=""
 os.environ["REDIS_URL"] = ""
+# Adjuntos: dirigir el almacenamiento a un directorio temporal aislado para no
+# escribir en /app/uploads durante los tests.
+import tempfile as _tempfile
+os.environ["UPLOAD_DIR"] = _tempfile.mkdtemp(prefix="lombardi_uploads_")
+# Throttle de reset por cuenta desactivado por defecto en tests (los tests que
+# lo ejercen lo activan vía monkeypatch). Así los demás no chocan con la ventana.
+os.environ["PASSWORD_RESET_REQUEST_COOLDOWN_MINUTES"] = "0"
 
 import asyncio
 from typing import AsyncIterator
@@ -36,10 +43,38 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """
+    El limiter usa storage en memoria que persiste ENTRE tests dentro de la
+    misma sesión de pytest. Sin resetear, los endpoints con límite literal
+    (p.ej. /me/password '5/minute') acumulan llamadas a lo largo de la suite y
+    fallan con 429. Lo limpiamos antes de cada test para aislarlos.
+    """
+    try:
+        from app.core.limiter import limiter
+        limiter.reset()
+    except Exception:  # noqa: BLE001
+        pass
+    yield
+
+
 @pytest_asyncio.fixture(scope="function")
 async def engine():
     # Cada test arranca con DB limpia en memoria.
     e = create_async_engine("sqlite+aiosqlite:///:memory:", future=True, echo=False)
+
+    # SQLite NO aplica claves foráneas por defecto. Lo activamos para que los
+    # tests reflejen el comportamiento de Postgres (FK RESTRICT → IntegrityError
+    # → 409 al borrar registros en uso, etc.).
+    from sqlalchemy import event
+
+    @event.listens_for(e.sync_engine, "connect")
+    def _enable_sqlite_fk(dbapi_conn, _rec):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
     async with e.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield e

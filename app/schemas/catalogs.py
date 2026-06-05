@@ -44,14 +44,14 @@ class MarcaResponse(MarcaBase):
 # =======================
 class TipoConexionBase(BaseModel):
     TCN_Nombre: str = Field(..., min_length=2, max_length=50)
-    TCN_Descripcion: Optional[str] = None
+    TCN_Descripcion: Optional[str] = Field(None, max_length=200)
 
 class TipoConexionCreate(TipoConexionBase):
     pass
 
 class TipoConexionUpdate(BaseModel):
     TCN_Nombre: Optional[str] = Field(None, min_length=2, max_length=50)
-    TCN_Descripcion: Optional[str] = None
+    TCN_Descripcion: Optional[str] = Field(None, max_length=200)
 
 
 class TipoConexionResponse(TipoConexionBase):
@@ -68,15 +68,19 @@ class ModeloBase(BaseModel):
     # FKs
     MAR_Marca: int
     TCN_Tipo_Conexion: Optional[int] = None
+    TAC_Tipo_Activo: Optional[int] = None
 
 class ModeloCreate(ModeloBase):
-    pass
+    # Cota de rango SOLO en la entrada (la base/respuesta quedan laxas para no
+    # romper la serialización de modelos legados con años fuera de rango).
+    MOD_Anio_Lanzamiento: Optional[int] = Field(None, ge=1970, le=2100)
 
 class ModeloUpdate(BaseModel):
     MOD_Nombre: Optional[str] = Field(None, min_length=2, max_length=150)
-    MOD_Anio_Lanzamiento: Optional[int] = None
+    MOD_Anio_Lanzamiento: Optional[int] = Field(None, ge=1970, le=2100)
     MAR_Marca: Optional[int] = None
     TCN_Tipo_Conexion: Optional[int] = None
+    TAC_Tipo_Activo: Optional[int] = None
 
 
 class ModeloResponse(ModeloBase):
@@ -91,6 +95,7 @@ class ModeloFlatResponse(BaseModel):
     MAR_Marca: int
     MAR_Nombre: str
     TCN_Tipo_Conexion: Optional[int] = None
+    TAC_Tipo_Activo: Optional[int] = None
     MOD_Anio_Lanzamiento: Optional[int] = None
 
     @property
@@ -104,14 +109,14 @@ class ModeloFlatResponse(BaseModel):
 # =======================
 class EstadoOperativoBase(BaseModel):
     EOP_Nombre: str = Field(..., min_length=2, max_length=50)
-    EOP_Descripcion: Optional[str] = None
+    EOP_Descripcion: Optional[str] = Field(None, max_length=200)
 
 class EstadoOperativoCreate(EstadoOperativoBase):
     pass
 
 class EstadoOperativoUpdate(BaseModel):
     EOP_Nombre: Optional[str] = Field(None, min_length=2, max_length=50)
-    EOP_Descripcion: Optional[str] = None
+    EOP_Descripcion: Optional[str] = Field(None, max_length=200)
 
 
 class EstadoOperativoResponse(EstadoOperativoBase):

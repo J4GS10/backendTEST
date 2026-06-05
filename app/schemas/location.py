@@ -58,8 +58,8 @@ class MunicipioResponse(MunicipioBase):
 # =======================
 class SedeBase(BaseModel):
     SED_Nombre: str = Field(..., min_length=3, max_length=150)
-    SED_Direccion_Calle: Optional[str] = None
-    SED_Direccion_Numero: Optional[str] = None
+    SED_Direccion_Calle: Optional[str] = Field(None, max_length=200)
+    SED_Direccion_Numero: Optional[str] = Field(None, max_length=50)
     MUN_Municipio: int # FK
 
 class SedeCreate(SedeBase):
@@ -67,8 +67,8 @@ class SedeCreate(SedeBase):
 
 class SedeUpdate(BaseModel):
     SED_Nombre: Optional[str] = Field(None, min_length=3, max_length=150)
-    SED_Direccion_Calle: Optional[str] = None
-    SED_Direccion_Numero: Optional[str] = None
+    SED_Direccion_Calle: Optional[str] = Field(None, max_length=200)
+    SED_Direccion_Numero: Optional[str] = Field(None, max_length=50)
 
 class SedeResponse(SedeBase):
     SED_Sede: int
@@ -96,7 +96,7 @@ class EdificioResponse(EdificioBase):
 # =======================
 class NivelBase(BaseModel):
     NIV_Numero_Piso: str = Field(..., min_length=1, max_length=50)
-    NIV_Alias: Optional[str] = None
+    NIV_Alias: Optional[str] = Field(None, max_length=100)
     EDI_Edificio: int # FK
 
 class NivelCreate(NivelBase):
@@ -104,7 +104,7 @@ class NivelCreate(NivelBase):
 
 class NivelUpdate(BaseModel):
     NIV_Numero_Piso: Optional[str] = Field(None, min_length=1, max_length=50)
-    NIV_Alias: Optional[str] = None
+    NIV_Alias: Optional[str] = Field(None, max_length=100)
 
 class NivelResponse(NivelBase):
     NIV_Nivel: int
@@ -116,7 +116,7 @@ class NivelResponse(NivelBase):
 class AreaBase(BaseModel):
     ARE_Nombre: str = Field(..., min_length=2, max_length=150)
     ARE_Tipo_Acceso: str = "General"
-    ARE_Descripcion: Optional[str] = None
+    ARE_Descripcion: Optional[str] = Field(None, max_length=255)
     NIV_Nivel: int # FK
 
 class AreaCreate(AreaBase):
@@ -125,7 +125,7 @@ class AreaCreate(AreaBase):
 class AreaUpdate(BaseModel):
     ARE_Nombre: Optional[str] = Field(None, min_length=2, max_length=150)
     ARE_Tipo_Acceso: Optional[str] = None
-    ARE_Descripcion: Optional[str] = None
+    ARE_Descripcion: Optional[str] = Field(None, max_length=255)
 
 class AreaResponse(AreaBase):
     ARE_Area: int

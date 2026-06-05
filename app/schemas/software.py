@@ -6,14 +6,14 @@ import uuid
 # --- TIPO LICENCIA ---
 class TipoLicenciaBase(BaseModel):
     TLI_Nombre: str = Field(..., min_length=2, max_length=50)
-    TLI_Descripcion: Optional[str] = None
+    TLI_Descripcion: Optional[str] = Field(None, max_length=200)
 
 class TipoLicenciaCreate(TipoLicenciaBase):
     pass
 
 class TipoLicenciaUpdate(BaseModel):
     TLI_Nombre: Optional[str] = Field(None, min_length=2, max_length=50)
-    TLI_Descripcion: Optional[str] = None
+    TLI_Descripcion: Optional[str] = Field(None, max_length=200)
 
 class TipoLicenciaResponse(TipoLicenciaBase):
     TLI_Tipo_Licencia: int
@@ -48,10 +48,13 @@ class LicenciaBase(BaseModel):
     TLI_Tipo_Licencia: int
 
 class LicenciaCreate(LicenciaBase):
-    pass
+    # Cota SOLO en la entrada: el texto plano cifrado debe caber en la columna
+    # (500, ciphertext). La base/respuesta quedan laxas para no romper la
+    # lectura de claves legadas descifradas más largas.
+    LIC_Clave_Activacion: Optional[str] = Field(None, max_length=255, description="Serial Key")
 
 class LicenciaUpdate(BaseModel):
-    LIC_Clave_Activacion: Optional[str] = None
+    LIC_Clave_Activacion: Optional[str] = Field(None, max_length=255)
     LIC_Fecha_Vencimiento: Optional[date] = None
     LIC_Cantidad_Total: Optional[int] = Field(None, gt=0)
 

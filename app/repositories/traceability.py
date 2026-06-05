@@ -135,7 +135,9 @@ class TraceabilityRepository:
         return result.rowcount == 1
 
     async def create_movimiento(self, schema: MovimientoCreate) -> Movimiento:
-        obj = Movimiento(**schema.model_dump())
+        # ACT_Hostname no es columna de Movimiento (se usa para actualizar el
+        # activo en el servicio); se excluye del INSERT del movimiento.
+        obj = Movimiento(**schema.model_dump(exclude={"ACT_Hostname"}))
         self.db.add(obj)
         await self.db.flush()
         return obj

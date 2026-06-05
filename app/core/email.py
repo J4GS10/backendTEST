@@ -64,7 +64,7 @@ _TEMPLATES: dict[str, str] = {
     "asignacion": """
 {{ style }}
 <div class="card">
-  <h1>📦 Activo asignado <span class="tag">{{ codigo }}</span></h1>
+  <h1>Activo asignado <span class="tag">{{ codigo }}</span></h1>
   <p>Hola {{ persona_nombre }},</p>
   <p>Se ha registrado la asignación de un activo bajo tu custodia.</p>
   <table>
@@ -88,7 +88,7 @@ _TEMPLATES: dict[str, str] = {
     "devolucion": """
 {{ style }}
 <div class="card">
-  <h1>↩️ Activo devuelto <span class="tag">{{ codigo }}</span></h1>
+  <h1>Activo devuelto <span class="tag">{{ codigo }}</span></h1>
   <p>Se ha registrado la devolución del siguiente activo:</p>
   <table>
     <tr><td class="k">Código interno</td><td class="v">{{ codigo }}</td></tr>
@@ -103,7 +103,7 @@ _TEMPLATES: dict[str, str] = {
     "transferencia": """
 {{ style }}
 <div class="card">
-  <h1>🔄 Transferencia de activo <span class="tag">{{ codigo }}</span></h1>
+  <h1>Transferencia de activo <span class="tag">{{ codigo }}</span></h1>
   <p>Se ha registrado una transferencia de custodia:</p>
   <table>
     <tr><td class="k">Código interno</td><td class="v">{{ codigo }}</td></tr>
@@ -118,7 +118,7 @@ _TEMPLATES: dict[str, str] = {
     "baja": """
 {{ style }}
 <div class="card">
-  <h1>🗑️ Activo dado de baja <span class="tag">{{ codigo }}</span></h1>
+  <h1>Activo dado de baja <span class="tag">{{ codigo }}</span></h1>
   <p>El siguiente activo ha sido dado de baja del inventario:</p>
   <table>
     <tr><td class="k">Código interno</td><td class="v">{{ codigo }}</td></tr>
@@ -133,7 +133,7 @@ _TEMPLATES: dict[str, str] = {
     "offboarding": """
 {{ style }}
 <div class="card">
-  <h1>🚪 Salida de empleado <span class="tag">{{ persona_nombre }}</span></h1>
+  <h1>Salida de empleado <span class="tag">{{ persona_nombre }}</span></h1>
   <p>Se ha procesado la salida del empleado:</p>
   <table>
     <tr><td class="k">Empleado</td><td class="v">{{ persona_nombre }}</td></tr>
@@ -153,7 +153,7 @@ _TEMPLATES: dict[str, str] = {
     "mantenimiento_abierto": """
 {{ style }}
 <div class="card">
-  <h1>🔧 Ticket de mantenimiento abierto <span class="tag">{{ codigo }}</span></h1>
+  <h1>Ticket de mantenimiento abierto <span class="tag">{{ codigo }}</span></h1>
   <p>Se ha abierto un ticket de mantenimiento:</p>
   <table>
     <tr><td class="k">Activo</td><td class="v">{{ codigo }}</td></tr>
@@ -169,7 +169,7 @@ _TEMPLATES: dict[str, str] = {
     "mantenimiento_cerrado": """
 {{ style }}
 <div class="card">
-  <h1>✅ Mantenimiento cerrado <span class="tag">{{ codigo }}</span></h1>
+  <h1>Mantenimiento cerrado <span class="tag">{{ codigo }}</span></h1>
   <p>El ticket de mantenimiento ha sido cerrado:</p>
   <table>
     <tr><td class="k">Activo</td><td class="v">{{ codigo }}</td></tr>
@@ -179,6 +179,97 @@ _TEMPLATES: dict[str, str] = {
   </table>
   {{ operator_block }}
   <div class="footer">Sistema Inventario Lombardi · notificación automática</div>
+</div>
+""",
+    "stock_bajo": """
+{{ style }}
+<div class="card">
+  <h1>Stock bajo <span class="tag">{{ codigo }}</span></h1>
+  <p>El siguiente consumible alcanzó o cayó por debajo de su stock mínimo y
+     conviene reabastecerlo:</p>
+  <table>
+    <tr><td class="k">Consumible</td><td class="v">{{ codigo }}</td></tr>
+    <tr><td class="k">Stock actual</td><td class="v">{{ stock_actual }} {{ unidad }}</td></tr>
+    <tr><td class="k">Stock mínimo</td><td class="v">{{ stock_minimo }} {{ unidad }}</td></tr>
+    {% if categoria %}<tr><td class="k">Categoría</td><td class="v">{{ categoria }}</td></tr>{% endif %}
+  </table>
+  {{ operator_block }}
+  <div class="footer">Sistema Inventario Lombardi · alerta automática de inventario</div>
+</div>
+""",
+    "password_changed": """
+{{ style }}
+<div class="card">
+  <h1>Tu contraseña fue cambiada</h1>
+  <p>Hola {{ persona_nombre }},</p>
+  <p>Te confirmamos que la contraseña de tu cuenta <b>{{ username }}</b> se cambió
+     correctamente.</p>
+  <table>
+    <tr><td class="k">Cuenta</td><td class="v">{{ username }}</td></tr>
+    <tr><td class="k">Método</td><td class="v">{{ metodo }}</td></tr>
+    <tr><td class="k">Fecha</td><td class="v">{{ fecha }}</td></tr>
+    {% if ip %}<tr><td class="k">Origen (IP)</td><td class="v">{{ ip }}</td></tr>{% endif %}
+  </table>
+  <p style="margin-top:16px;padding:12px;background:#fef2f2;border-left:3px solid #ef4444;
+     font-size:13px;color:#7f1d1d;">
+     <b>¿No fuiste tú?</b> Tu cuenta podría estar comprometida. Restablece tu
+     contraseña de inmediato y contacta al equipo de TI.</p>
+  <div class="footer">Sistema Inventario Lombardi · seguridad de la cuenta</div>
+</div>
+""",
+    "2fa_code": """
+{{ style }}
+<div class="card">
+  <h1>Tu código de verificación</h1>
+  <p>Hola {{ persona_nombre }},</p>
+  <p>Usa este código para completar tu inicio de sesión en <b>{{ username }}</b>
+     (válido por {{ minutos }} minutos):</p>
+  <p style="font-size:30px;font-weight:bold;letter-spacing:8px;text-align:center;
+     margin:18px 0;color:#0f172a;">{{ code }}</p>
+  <p style="font-size:13px;color:#6b7280;">Si no intentaste iniciar sesión, ignora
+     este correo y considera cambiar tu contraseña.</p>
+  <div class="footer">Sistema Inventario Lombardi · verificación en dos pasos</div>
+</div>
+""",
+    "password_reset": """
+{{ style }}
+<div class="card">
+  <h1>Restablecimiento de contraseña</h1>
+  <p>Hola {{ persona_nombre }},</p>
+  <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta
+     <b>{{ username }}</b>. Si fuiste tú, usa el siguiente enlace (válido por
+     {{ minutos }} minutos):</p>
+  <p style="margin:16px 0;">
+    <a href="{{ reset_url }}" style="display:inline-block;padding:10px 18px;
+       background:#0ea5e9;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">
+       Restablecer contraseña</a>
+  </p>
+  <p style="font-size:13px;color:#6b7280;">O copia este código en la pantalla de
+     restablecimiento:</p>
+  <p style="font-family:monospace;font-size:13px;word-break:break-all;
+     background:#f3f4f6;padding:10px;border-radius:6px;">{{ token }}</p>
+  <p style="font-size:13px;color:#6b7280;">Si no solicitaste esto, ignora este
+     correo: tu contraseña no cambiará.</p>
+  <div class="footer">Sistema Inventario Lombardi · seguridad de la cuenta</div>
+</div>
+""",
+    "garantia_por_vencer": """
+{{ style }}
+<div class="card">
+  <h1>Garantías por vencer</h1>
+  <p>Hay <strong>{{ total }}</strong> activo(s) con garantía vencida o por vencer
+     en los próximos {{ dias }} días:</p>
+  <table>
+    <tr><td class="k" style="font-weight:600;color:#374151;">Activo</td>
+        <td class="k" style="font-weight:600;color:#374151;">Fin garantía</td>
+        <td class="k" style="font-weight:600;color:#374151;">Estado</td></tr>
+    {% for it in items %}
+    <tr><td class="v">{{ it.codigo }}</td>
+        <td class="v">{{ it.fin }}</td>
+        <td class="v">{{ it.estado }}{% if it.dias is not none %} ({{ it.dias }}d){% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <div class="footer">Sistema Inventario Lombardi · alerta automática de garantías</div>
 </div>
 """,
 }
@@ -192,7 +283,18 @@ _SUBJECTS = {
     "offboarding": "[Inventario] Salida de empleado: {persona_nombre}",
     "mantenimiento_abierto": "[Inventario] Mantenimiento abierto: {codigo}",
     "mantenimiento_cerrado": "[Inventario] Mantenimiento cerrado: {codigo}",
+    "stock_bajo": "[Inventario] Stock bajo: {codigo}",
+    "garantia_por_vencer": "[Inventario] Garantias por vencer: {total} activo(s)",
+    "password_reset": "[Inventario] Restablecimiento de contrasena",
+    "password_changed": "[Inventario] Tu contrasena fue cambiada",
+    "2fa_code": "[Inventario] Codigo de verificacion: {code}",
 }
+
+
+class _SafeDict(dict):
+    """Para str.format_map: claves ausentes -> '' en vez de KeyError."""
+    def __missing__(self, key):  # noqa: D401
+        return ""
 
 
 def _render(template_name: str, ctx: dict[str, Any]) -> tuple[str, str]:
@@ -214,7 +316,7 @@ def _render(template_name: str, ctx: dict[str, Any]) -> tuple[str, str]:
         operator_block=Markup(operator_block),
         **ctx,
     )
-    subject = _SUBJECTS[template_name].format(**{k: ctx.get(k, "") for k in ("codigo", "persona_nombre")})
+    subject = _SUBJECTS[template_name].format_map(_SafeDict(ctx))
     return subject, body
 
 
@@ -317,6 +419,31 @@ async def send_notification(
     subject, html = _render(template_name, enriched_ctx)
     # Fire-and-forget: el caller no espera el envío SMTP.
     asyncio.create_task(_send_via_smtp(recipients, subject, html, reply_to=reply_to))
+
+
+async def notify_password_changed(
+    *, persona_nombre: str, username: str, to_email: str | None,
+    metodo: str, ip: str | None = None,
+) -> None:
+    """
+    Aviso de seguridad al DUEÑO de la cuenta de que su contraseña cambió.
+    Solo al usuario (cc_admins=False); fire-and-forget. No-op si no hay correo.
+    """
+    if not to_email:
+        return
+    from datetime import datetime, timezone
+    await send_notification(
+        "password_changed",
+        {
+            "persona_nombre": persona_nombre,
+            "username": username,
+            "metodo": metodo,
+            "fecha": datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": ip or "",
+        },
+        to=[to_email],
+        cc_admins=False,
+    )
 
 
 def send_notification_sync_for_tests(

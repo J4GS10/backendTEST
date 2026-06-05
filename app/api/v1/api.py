@@ -11,6 +11,10 @@ from app.api.v1.endpoints import (
     stats,
     maintenance,
     export,
+    consumable,
+    attachment,
+    procurement,
+    twofactor,
 )
 from app.api import deps
 
@@ -18,6 +22,8 @@ api_router = APIRouter()
 
 # 1. Auth (Público)
 api_router.include_router(login.router, tags=["Autenticación"])
+# 1b. 2FA del usuario autenticado (/me/2fa/*) — JWT requerido en cada endpoint.
+api_router.include_router(twofactor.router, tags=["2FA"])
 
 # 2. Gobierno (GET público para cargar tema visual antes del login)
 api_router.include_router(governance.router, prefix="/gov", tags=["Gobierno"])
@@ -51,6 +57,18 @@ api_router.include_router(
 )
 api_router.include_router(
     maintenance.router, prefix="/mantenimiento", tags=["Mantenimiento y Soporte"],
+    dependencies=_auth
+)
+api_router.include_router(
+    consumable.router, prefix="/consumibles", tags=["Consumibles"],
+    dependencies=_auth
+)
+api_router.include_router(
+    attachment.router, prefix="/adjuntos", tags=["Adjuntos"],
+    dependencies=_auth
+)
+api_router.include_router(
+    procurement.router, prefix="/compras", tags=["Compras y Garantías"],
     dependencies=_auth
 )
 

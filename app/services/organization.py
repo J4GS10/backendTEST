@@ -364,11 +364,21 @@ class OrganizationService:
     ):
         target = await self.get_usuario(usuario_id_target)
 
+        # Capturamos el estado ANTES de mutar, para la traza forense antes→después.
+        rol_anterior = target.USU_Rol
+        estado_anterior = target.USU_Estado
+
         # Protección de jerarquía
         if target.USU_Rol == "SUPER_ADMIN" and requester_role != "SUPER_ADMIN":
             raise HTTPException(403, "CANNOT_MODIFY_SUPER_ADMIN")
         if requester_role == "ADMIN_TI" and target.USU_Rol in ("SUPER_ADMIN", "ADMIN_TI"):
             raise HTTPException(403, "INSUFFICIENT_PERMISSIONS")
+        # ANTI-ESCALADA: otorgar un rol administrativo (incluida la elevación de
+        # un CONSULTA/TECNICO) solo lo puede hacer un SUPER_ADMIN. Sin esto, un
+        # ADMIN_TI podía editar un usuario de bajo privilegio y ponerle
+        # USU_Rol=SUPER_ADMIN, fabricándose un super admin (espejo de create_usuario).
+        if schema.USU_Rol in ("SUPER_ADMIN", "ADMIN_TI") and requester_role != "SUPER_ADMIN":
+            raise HTTPException(403, "ONLY_SUPER_ADMIN_CAN_GRANT_ADMIN_ROLES")
 
         # Protección del último super-admin
         will_disable = schema.USU_Estado is False
@@ -390,16 +400,71 @@ class OrganizationService:
             await self.gov_repo.revoke_all_user_tokens(usuario_id_target, expira=now.replace(year=now.year + 1))
 
         obj = await self.usu_repo.update(usuario_id_target, schema)
+
+        cambios = schema.model_dump(exclude_unset=True, exclude={"USU_Password"})
+        # Diff explícito antes→después solo para los campos sensibles que cambian
+        # de valor. Permite responder "¿quién cambió de qué rol a qué rol?" desde
+        # una sola fila de la bitácora (auditoría append-only).
+        diff: dict = {}
+        if schema.USU_Rol is not None and schema.USU_Rol != rol_anterior:
+            diff["USU_Rol"] = {"antes": rol_anterior, "despues": schema.USU_Rol}
+        if schema.USU_Estado is not None and schema.USU_Estado != estado_anterior:
+            diff["USU_Estado"] = {"antes": estado_anterior, "despues": schema.USU_Estado}
+
         await self._commit_audit(
             accion="UPDATE", entidad="INV_USUARIO",
             snapshot={
                 "target_id": str(usuario_id_target),
-                "cambios": schema.model_dump(exclude_unset=True, exclude={"USU_Password"}),
+                "target_username": target.USU_Username,
+                "cambios": cambios,
+                "diff": diff,
                 "password_cambiada": bool(schema.USU_Password),
             },
             usuario_id=usuario_id, ip=ip,
         )
+
+        # Si un admin cambió la contraseña de otro usuario, avisar al DUEÑO
+        # de la cuenta (post-commit, fire-and-forget).
+        if schema.USU_Password:
+            try:
+                from app.core.email import notify_password_changed
+                per = target.persona
+                await notify_password_changed(
+                    persona_nombre=(f"{per.PER_Primer_Nombre} {per.PER_Primer_Apellido}" if per else target.USU_Username),
+                    username=target.USU_Username,
+                    to_email=(per.PER_Email_Corporativo if per else None),
+                    metodo="Cambio por administrador",
+                    ip=ip,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return obj
+
+    async def reset_2fa(self, usuario_id_target: uuid.UUID, usuario_id=None, ip=None):
+        """
+        Reset administrativo del 2FA de un usuario (acción de SUPER_ADMIN).
+        Limpia método/secret, códigos de recuperación y OTPs de email pendientes.
+        NO requiere la contraseña del objetivo (es una acción administrativa, p.ej.
+        cuando el empleado pierde su teléfono). Si el rol del objetivo exige 2FA,
+        será forzado a re-enrolar en su próximo login.
+        """
+        target = await self.get_usuario(usuario_id_target)
+        estaba_habilitado = bool(target.USU_2FA_Habilitado)
+        target.USU_2FA_Habilitado = False
+        target.USU_2FA_Metodo = None
+        target.USU_2FA_Secret = None
+        await self.gov_repo.delete_recovery_codes(usuario_id_target)
+        await self.gov_repo.invalidate_email_otps(usuario_id_target)
+        await self._commit_audit(
+            accion="2FA_RESET_BY_ADMIN", entidad="INV_USUARIO",
+            snapshot={
+                "target_id": str(usuario_id_target),
+                "target_username": target.USU_Username,
+                "estaba_habilitado": estaba_habilitado,
+            },
+            usuario_id=usuario_id, ip=ip,
+        )
+        return target
 
     async def desactivar_usuario(
         self, usuario_id_target: uuid.UUID, requester_role: str, usuario_id=None, ip=None,

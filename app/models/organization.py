@@ -102,6 +102,12 @@ class Usuario(Base):
     USU_Bloqueado_Hasta = Column(DateTime, nullable=True)
     USU_Password_Cambiada_En = Column(DateTime, nullable=True)
 
+    # 2FA / MFA. Método 'TOTP' (app) o 'EMAIL' (código por correo). El secreto
+    # TOTP se guarda cifrado (Fernet); EMAIL no usa secreto persistente.
+    USU_2FA_Habilitado = Column(Boolean, default=False, nullable=False)
+    USU_2FA_Metodo = Column(String(10), nullable=True)
+    USU_2FA_Secret = Column(String(255), nullable=True)
+
     PER_Persona = Column(
         Uuid,
         ForeignKey("INV_PERSONA.PER_Persona", ondelete="RESTRICT"),
@@ -115,5 +121,9 @@ class Usuario(Base):
         CheckConstraint(
             "\"USU_Rol\" IN ('SUPER_ADMIN', 'ADMIN_TI', 'TECNICO', 'CONSULTA')",
             name="ck_usuario_rol_valido",
+        ),
+        CheckConstraint(
+            "\"USU_2FA_Metodo\" IS NULL OR \"USU_2FA_Metodo\" IN ('TOTP', 'EMAIL')",
+            name="ck_usuario_2fa_metodo_valido",
         ),
     )

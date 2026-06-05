@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.transactional import commit_or_409
@@ -20,6 +21,14 @@ from app.schemas.catalogs import (
 
 def _audit_ctx(usuario_id, ip):
     return {"usuario_id": usuario_id, "ip_origen": ip}
+
+
+# Estados operativos de los que depende la máquina de estados de los activos
+# (ver services/traceability.py y services/maintenance.py). Sus filas son "del
+# sistema": no se pueden renombrar ni borrar vía la API de catálogos.
+_PROTECTED_ESTADO_NAMES = frozenset(
+    {"disponible", "asignado", "en reparación", "en reparacion", "baja", "en bodega"}
+)
 
 
 class CatalogService:
@@ -191,11 +200,11 @@ class CatalogService:
         await self._commit_or_rollback()
         return obj
 
-    async def list_modelos(self, marca_id: int):
-        return await self.repo.get_modelos_by_marca(marca_id)
+    async def list_modelos(self, marca_id: int, tipo_id: int | None = None):
+        return await self.repo.get_modelos_by_marca(marca_id, tipo_id=tipo_id)
 
-    async def list_modelos_flat(self, q: str | None = None, limit: int = 500):
-        return await self.repo.get_modelos_flat(q=q, limit=limit)
+    async def list_modelos_flat(self, q: str | None = None, limit: int = 500, tipo_id: int | None = None):
+        return await self.repo.get_modelos_flat(q=q, limit=limit, tipo_id=tipo_id)
 
     async def get_modelo(self, id: int):
         obj = await self.repo.get_modelo_by_id(id)
@@ -252,8 +261,13 @@ class CatalogService:
         return obj
 
     async def update_estado_operativo(self, id: int, schema: EstadoOperativoUpdate, usuario_id=None, ip=None):
-        if not await self.repo.get_estado_operativo_by_id(id):
+        existing = await self.repo.get_estado_operativo_by_id(id)
+        if not existing:
             raise HTTPException(404, "OPERATIONAL_STATUS_NOT_FOUND")
+        # Las transiciones de estado dependen de estos nombres canónicos: no se
+        # pueden renombrar (rompería la máquina de estados de los activos).
+        if (existing.EOP_Nombre or "").strip().lower() in _PROTECTED_ESTADO_NAMES:
+            raise HTTPException(409, "CANNOT_MODIFY_SYSTEM_OPERATIONAL_STATUS")
         obj = await self.repo.update_estado_operativo(id, schema)
         await self.gov_repo.create_audit_log(
             "UPDATE", "INV_ESTADO_OPERATIVO",
@@ -267,6 +281,8 @@ class CatalogService:
         obj = await self.repo.get_estado_operativo_by_id(id)
         if not obj:
             raise HTTPException(404, "OPERATIONAL_STATUS_NOT_FOUND")
+        if (obj.EOP_Nombre or "").strip().lower() in _PROTECTED_ESTADO_NAMES:
+            raise HTTPException(409, "CANNOT_DELETE_SYSTEM_OPERATIONAL_STATUS")
         try:
             await self.repo.delete_estado_operativo(id)
             await self.gov_repo.create_audit_log(

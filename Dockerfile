@@ -42,8 +42,12 @@ COPY --from=builder /root/.local /home/appuser/.local
 
 COPY --chown=appuser:appuser . .
 
-# Permisos de ejecución para el entrypoint
-RUN chmod +x /app/entrypoint.sh
+# Permisos de ejecución para el entrypoint + directorio de adjuntos con dueño
+# appuser (un volumen nombrado montado aquí hereda esta propiedad en su 1ra init,
+# evitando el problema clásico de "volumen root + proceso uid 1001 sin escritura").
+RUN chmod +x /app/entrypoint.sh \
+    && mkdir -p /app/uploads \
+    && chown -R appuser:appuser /app/uploads
 
 USER appuser
 

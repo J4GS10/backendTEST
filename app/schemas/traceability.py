@@ -45,7 +45,12 @@ class MovimientoBase(BaseModel):
     MOV_Observacion: Optional[str] = None
 
 class MovimientoCreate(MovimientoBase):
-    pass
+    # Override con cota de longitud SOLO en la entrada (la base queda laxa para
+    # que los Response no fallen ante observaciones legadas largas en BD).
+    MOV_Observacion: Optional[str] = Field(None, max_length=1000)
+    # Opcional: al asignar un equipo a un nuevo usuario, permite fijar/cambiar
+    # el hostname del activo. Si es None, el activo conserva su hostname actual.
+    ACT_Hostname: Optional[str] = Field(None, max_length=100)
 
 class MovimientoResponse(MovimientoBase):
     MOV_Movimiento: uuid.UUID
@@ -74,7 +79,7 @@ class TransferenciaCreate(BaseModel):
     ACT_Activo: uuid.UUID
     PER_Persona_Destino: uuid.UUID
     ARE_Area_Destino: int
-    MOV_Observacion: Optional[str] = None
+    MOV_Observacion: Optional[str] = Field(None, max_length=1000)
 
 # Request para descarga por lote
 class ActaLoteRequest(BaseModel):

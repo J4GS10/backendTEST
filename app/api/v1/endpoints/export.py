@@ -34,9 +34,23 @@ def _safe_cell(value) -> str:
     return s
 
 
+def _fmt_dt(value) -> str:
+    """Fecha/hora legible para reportes: 'YYYY-MM-DD HH:MM:SS' (sin la 'T' ISO
+    ni microsegundos). Formato más profesional para usuarios de negocio."""
+    if value is None:
+        return ""
+    try:
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    except (AttributeError, ValueError):
+        return str(value)
+
+
 def _csv_response(headers: list[str], rows, filename_prefix: str) -> StreamingResponse:
     """Genera un CSV en memoria y lo retorna como streaming."""
     buf = io.StringIO()
+    # BOM UTF-8: hace que Microsoft Excel (Windows) detecte la codificación y
+    # muestre correctamente los acentos/ñ. Sin esto, "Devolución" se ve roto.
+    buf.write("﻿")
     writer = csv.writer(buf, quoting=csv.QUOTE_ALL)
     writer.writerow(headers)
     for row in rows:
@@ -105,8 +119,8 @@ async def export_movimientos_csv(
     rows = []
     for m in movs:
         rows.append([
-            m.MOV_Fecha_Asignacion.isoformat() if m.MOV_Fecha_Asignacion else "",
-            m.MOV_Fecha_Devolucion.isoformat() if m.MOV_Fecha_Devolucion else "",
+            _fmt_dt(m.MOV_Fecha_Asignacion),
+            _fmt_dt(m.MOV_Fecha_Devolucion),
             m.activo.ACT_Codigo_Interno if m.activo else "",
             m.activo.ACT_Serie_Fabricante if m.activo else "",
             f"{m.persona.PER_Primer_Nombre} {m.persona.PER_Primer_Apellido}" if m.persona else "",
@@ -116,6 +130,52 @@ async def export_movimientos_csv(
             m.MOV_Observacion or "",
         ])
     return _csv_response(headers, rows, "movimientos")
+
+
+@router.get("/consumibles.csv", dependencies=[Depends(require_admin)])
+@limiter.limit("10/minute")
+async def export_consumibles_csv(request: Request, db: AsyncSession = Depends(get_db)):
+    """Exporta los consumibles a CSV (con stock y flag de bajo stock)."""
+    from app.repositories.consumable import ConsumibleRepository
+    items = await ConsumibleRepository(db).get_all()
+    headers = ["Nombre", "Categoria", "Unidad", "Stock_Actual", "Stock_Minimo", "Bajo_Stock", "Activo"]
+    rows = [[
+        c.CON_Nombre, c.CON_Categoria or "", c.CON_Unidad,
+        c.CON_Stock_Actual, c.CON_Stock_Minimo,
+        "SI" if (c.CON_Stock_Minimo > 0 and c.CON_Stock_Actual <= c.CON_Stock_Minimo) else "NO",
+        "SI" if c.CON_Activo else "NO",
+    ] for c in items]
+    return _csv_response(headers, rows, "consumibles")
+
+
+@router.get("/proveedores.csv", dependencies=[Depends(require_admin)])
+@limiter.limit("10/minute")
+async def export_proveedores_csv(request: Request, db: AsyncSession = Depends(get_db)):
+    """Exporta los proveedores a CSV."""
+    from app.repositories.procurement import ProcurementRepository
+    items = await ProcurementRepository(db).get_proveedores()
+    headers = ["Nombre", "Identificacion_Fiscal", "Contacto", "Email", "Telefono", "Direccion", "Activo"]
+    rows = [[
+        p.PRV_Nombre, p.PRV_Identificacion_Fiscal or "", p.PRV_Contacto or "",
+        p.PRV_Email or "", p.PRV_Telefono or "", p.PRV_Direccion or "",
+        "SI" if p.PRV_Activo else "NO",
+    ] for p in items]
+    return _csv_response(headers, rows, "proveedores")
+
+
+@router.get("/ordenes.csv", dependencies=[Depends(require_admin)])
+@limiter.limit("10/minute")
+async def export_ordenes_csv(request: Request, db: AsyncSession = Depends(get_db)):
+    """Exporta las órdenes de compra a CSV (cabecera, sin líneas)."""
+    from app.repositories.procurement import ProcurementRepository
+    items = await ProcurementRepository(db).list_ordenes()
+    headers = ["Numero", "Proveedor", "Fecha", "Estado", "Moneda", "Total", "Notas"]
+    rows = [[
+        o.OCO_Numero, o.proveedor.PRV_Nombre if o.proveedor else "",
+        o.OCO_Fecha.isoformat() if o.OCO_Fecha else "", o.OCO_Estado, o.OCO_Moneda,
+        str(o.OCO_Total or ""), o.OCO_Notas or "",
+    ] for o in items]
+    return _csv_response(headers, rows, "ordenes")
 
 
 @router.get("/auditoria.csv", dependencies=[Depends(require_super_admin)])
@@ -133,7 +193,7 @@ async def export_auditoria_csv(
     rows = []
     for ev in result["items"]:
         rows.append([
-            ev.AUD_Fecha_Hora.isoformat() if ev.AUD_Fecha_Hora else "",
+            _fmt_dt(ev.AUD_Fecha_Hora),
             ev.AUD_Accion,
             ev.AUD_Entidad_Afectada,
             ev.AUD_IP_Origen or "",

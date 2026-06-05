@@ -153,15 +153,27 @@ class CatalogRepository:
         await self.db.flush()
         return obj
 
-    async def get_modelos_by_marca(self, marca_id: int) -> List[Modelo]:
-        result = await self.db.execute(select(Modelo).where(Modelo.MAR_Marca == marca_id))
+    async def get_modelos_by_marca(self, marca_id: int, tipo_id: int | None = None) -> List[Modelo]:
+        stmt = select(Modelo).where(Modelo.MAR_Marca == marca_id)
+        if tipo_id is not None:
+            # Cascada: solo modelos de ese tipo de componente (+ los sin tipo,
+            # por compatibilidad con datos legados). Evita abrumar el select.
+            stmt = stmt.where(
+                (Modelo.TAC_Tipo_Activo == tipo_id) | (Modelo.TAC_Tipo_Activo.is_(None))
+            )
+        result = await self.db.execute(stmt)
         return result.scalars().all()
 
-    async def get_modelos_flat(self, q: str | None = None, limit: int = 500) -> list[dict]:
+    async def get_modelos_flat(self, q: str | None = None, limit: int = 500,
+                               tipo_id: int | None = None) -> list[dict]:
         """
         Devuelve modelos con marca embebida (plano) usando un único JOIN.
         Pensado para selects del frontend que necesitan ver "Marca + Modelo"
         sin hacer N requests (uno por marca).
+
+        Si `tipo_id` se especifica, filtra a los modelos de ese tipo de componente
+        (más los que aún no tienen tipo asignado, por compatibilidad) — habilita
+        la cascada "elijo Mouse → solo modelos de mouse".
         """
         from app.models.catalogs import Marca
 
@@ -172,12 +184,17 @@ class CatalogRepository:
                 Modelo.MAR_Marca,
                 Marca.MAR_Nombre,
                 Modelo.TCN_Tipo_Conexion,
+                Modelo.TAC_Tipo_Activo,
                 Modelo.MOD_Anio_Lanzamiento,
             )
             .join(Marca, Modelo.MAR_Marca == Marca.MAR_Marca)
             .order_by(Marca.MAR_Nombre.asc(), Modelo.MOD_Nombre.asc())
             .limit(limit)
         )
+        if tipo_id is not None:
+            query = query.where(
+                (Modelo.TAC_Tipo_Activo == tipo_id) | (Modelo.TAC_Tipo_Activo.is_(None))
+            )
         if q:
             # Escape de wildcards LIKE para frenar patrones patológicos del usuario.
             safe_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -194,7 +211,8 @@ class CatalogRepository:
                 "MAR_Marca": r[2],
                 "MAR_Nombre": r[3],
                 "TCN_Tipo_Conexion": r[4],
-                "MOD_Anio_Lanzamiento": r[5],
+                "TAC_Tipo_Activo": r[5],
+                "MOD_Anio_Lanzamiento": r[6],
             }
             for r in rows
         ]

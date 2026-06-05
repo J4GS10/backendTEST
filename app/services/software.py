@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import internal_error
 from app.core.security import encrypt_field, decrypt_field
+from app.core.transactional import commit_or_409
 from app.models.software import Software as SoftwareModel
 from app.repositories.governance import GovernanceRepository
 from app.repositories.software import SoftwareRepository
@@ -40,7 +41,7 @@ class SoftwareService:
                 "CREATE", "INV_TIPO_LICENCIA", {"nombre": schema.TLI_Nombre},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
             await self.db.refresh(obj)
             return obj
         except HTTPException:
@@ -63,7 +64,7 @@ class SoftwareService:
                 {"id": id, "cambios": schema.model_dump(exclude_unset=True)},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
             return obj
         except HTTPException:
             await self.db.rollback(); raise
@@ -85,7 +86,7 @@ class SoftwareService:
                 {"id": id, "nombre": tipo.TLI_Nombre},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
         except HTTPException:
             await self.db.rollback(); raise
         except Exception as e:
@@ -103,7 +104,7 @@ class SoftwareService:
                 {"nombre": schema.SOF_Nombre, "version": schema.SOF_Version},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
             await self.db.refresh(obj)
             return obj
         except HTTPException:
@@ -126,7 +127,7 @@ class SoftwareService:
                 {"id": id, "cambios": schema.model_dump(exclude_unset=True)},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
             return obj
         except HTTPException:
             await self.db.rollback(); raise
@@ -148,7 +149,7 @@ class SoftwareService:
                 {"id": id, "nombre": sw.SOF_Nombre},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
         except HTTPException:
             await self.db.rollback(); raise
         except Exception as e:
@@ -181,7 +182,7 @@ class SoftwareService:
                 {"software_id": schema.SOF_Software, "cantidad_total": schema.LIC_Cantidad_Total},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
             await self.db.refresh(obj)
             return obj
         except HTTPException:
@@ -225,10 +226,7 @@ class SoftwareService:
             {"id": id, "cambios": schema.model_dump(exclude_unset=True, exclude={"LIC_Clave_Activacion"})},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        try:
-            await self.db.commit()
-        except Exception:
-            await self.db.rollback(); raise
+        await commit_or_409(self.db, where="SoftwareService.update_licencia")
         return updated
 
     async def delete_licencia(self, id: int, usuario_id=None, ip=None):
@@ -297,7 +295,7 @@ class SoftwareService:
                 {"activo": str(schema.ACT_Activo), "licencia": schema.LIC_Licencia},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
             await self.db.refresh(instalacion)
             return instalacion
         except HTTPException:
@@ -332,7 +330,7 @@ class SoftwareService:
                 {"activo": str(schema.ACT_Activo), "licencia": schema.LIC_Licencia},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="SoftwareService")
             return {"status": "success", "message": "SOFTWARE_UNINSTALLED_SUCCESSFULLY"}
         except HTTPException:
             await self.db.rollback(); raise

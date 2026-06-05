@@ -197,6 +197,21 @@ async def update_usuario(
     )
 
 
+@router.post("/usuarios/{usuario_id}/2fa/reset", dependencies=SUPER)
+async def reset_usuario_2fa(
+    usuario_id: uuid.UUID, request: Request, current_user: CurrentUser,
+    service: OrganizationService = Depends(get_service),
+):
+    """Reset administrativo del 2FA de un usuario (solo SUPER_ADMIN).
+
+    Útil cuando el empleado pierde su segundo factor. Limpia método/secret,
+    códigos de recuperación y OTPs de email; el usuario re-enrola en su próximo
+    login si su rol lo exige.
+    """
+    await service.reset_2fa(usuario_id, **_ctx(request, current_user))
+    return {"status": "success", "message": "2FA_RESET"}
+
+
 @router.delete("/usuarios/{usuario_id}", status_code=204, dependencies=ADMIN)
 async def desactivar_usuario(
     usuario_id: uuid.UUID, request: Request, current_user: CurrentUser,

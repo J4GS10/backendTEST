@@ -176,44 +176,58 @@ async def offboarding_persona(
     )
 
 
-# ================= ACTAS (documentos Word) =================
-@router.get("/acta/{movimiento_id}", response_class=StreamingResponse)
-async def descargar_acta(
-    movimiento_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """Genera y descarga el Acta de Entrega en formato Word (.docx)."""
-    from app.services.documents import DocumentService
-    doc_service = DocumentService(db)
+# ================= ACTAS (documentos Word / PDF) =================
+_ACTA_MEDIA = {
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+    "pdf": ("application/pdf", "pdf"),
+}
 
-    buffer = await doc_service.generar_acta_entrega(movimiento_id)
-    filename = f"Acta_Entrega_{movimiento_id}.docx"
 
+def _acta_response(buffer, filename_base: str, formato: str) -> StreamingResponse:
+    media_type, ext = _ACTA_MEDIA.get((formato or "docx").lower(), _ACTA_MEDIA["docx"])
     return StreamingResponse(
         buffer,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename_base}.{ext}"'},
     )
 
 
-@router.post("/acta/lote", response_class=StreamingResponse)
-async def descargar_acta_multiple(
-    payload: ActaLoteRequest,
+@router.get("/acta/{movimiento_id}", response_class=StreamingResponse, dependencies=OPERATIVO)
+async def descargar_acta(
+    movimiento_id: uuid.UUID,
+    formato: str = Query("docx", pattern="^(docx|pdf)$", description="Formato: docx o pdf"),
+    tipo: str = Query("entrega", pattern="^(entrega|descargo)$",
+                      description="entrega (handover) o descargo (devolución/liberación)"),
+    mensajero: str | None = Query(None, max_length=120,
+                                  description="Nombre del mensajero externo que recibe (opcional)"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Genera una sola Acta Word para múltiples movimientos."""
+    """Genera el Acta de Entrega o la Hoja de Descargo (devolución) en Word o PDF."""
+    from app.services.documents import DocumentService
+    doc_service = DocumentService(db)
+    buffer = await doc_service.generar_acta_entrega(movimiento_id, formato=formato, tipo=tipo, mensajero=mensajero)
+    nombre = "Descargo" if tipo == "descargo" else "Entrega"
+    return _acta_response(buffer, f"Acta_{nombre}_{movimiento_id}", formato)
+
+
+@router.post("/acta/lote", response_class=StreamingResponse, dependencies=OPERATIVO)
+async def descargar_acta_multiple(
+    payload: ActaLoteRequest,
+    formato: str = Query("docx", pattern="^(docx|pdf)$", description="Formato: docx o pdf"),
+    tipo: str = Query("entrega", pattern="^(entrega|descargo)$",
+                      description="entrega o descargo"),
+    mensajero: str | None = Query(None, max_length=120,
+                                  description="Nombre del mensajero externo que recibe (opcional)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Genera una sola Acta/Hoja (Word o PDF) para múltiples movimientos."""
     if len(payload.movimientos_ids) > 50:
         from fastapi import HTTPException
         raise HTTPException(400, "TOO_MANY_MOVEMENTS_REQUESTED")
 
     from app.services.documents import DocumentService
     doc_service = DocumentService(db)
-
-    buffer = await doc_service.generar_acta_multiple(payload.movimientos_ids)
-    filename = f"Acta_Entrega_Lote_{datetime.now().strftime('%Y%m%d_%H%M')}.docx"
-
-    return StreamingResponse(
-        buffer,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    buffer = await doc_service.generar_acta_multiple(payload.movimientos_ids, formato=formato, tipo=tipo, mensajero=mensajero)
+    nombre = "Descargo" if tipo == "descargo" else "Entrega"
+    filename = f"Acta_{nombre}_Lote_{datetime.now().strftime('%Y%m%d_%H%M')}"
+    return _acta_response(buffer, filename, formato)

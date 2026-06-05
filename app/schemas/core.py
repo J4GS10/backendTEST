@@ -18,6 +18,19 @@ class EspecificacionResponse(EspecificacionBase):
     ESP_Especificacion: int
     model_config = ConfigDict(from_attributes=True)
 
+
+# Respuesta enriquecida: incluye nombre y unidad del tipo (para la UI).
+class EspecificacionDetalle(BaseModel):
+    ESP_Especificacion: int
+    TES_Tipo_Especificacion: int
+    TES_Nombre: str
+    TES_Unidad_Medida: Optional[str] = None
+    ESP_Valor: str
+
+
+class EspecificacionValorUpdate(BaseModel):
+    ESP_Valor: str = Field(..., min_length=1, max_length=255)
+
 # =======================
 # ACTIVO (CORE)
 # =======================

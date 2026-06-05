@@ -39,6 +39,9 @@ class MantenimientoBase(BaseModel):
     MAN_Costo_Total: Decimal = Field(default=0, ge=0)
 
 class MantenimientoCreate(MantenimientoBase):
+    # Cota de longitud SOLO en la entrada (la base queda laxa para que los
+    # Response no fallen ante descripciones legadas largas en BD).
+    MAN_Descripcion_Falla: str = Field(..., max_length=2000)
     # Lista opcional de acciones realizadas
     detalles: List[DetalleCreate] = []
 

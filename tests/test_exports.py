@@ -18,7 +18,9 @@ import pytest
 
 
 def _parse_csv(text: str) -> tuple[list[str], list[list[str]]]:
-    reader = csv.reader(io.StringIO(text))
+    # El export lleva BOM UTF-8 (para Excel); lo descartamos al parsear, igual
+    # que haría cualquier lector de CSV correcto.
+    reader = csv.reader(io.StringIO(text.lstrip("﻿")))
     rows = list(reader)
     return rows[0], rows[1:]
 
@@ -154,6 +156,14 @@ async def test_export_auditoria_requiere_super_admin(
     headers, _ = _parse_csv(r.text)
     assert "Accion" in headers
     assert "Snapshot_JSON" in headers
+
+
+@pytest.mark.asyncio
+async def test_export_csv_tiene_bom_utf8(client, auth_headers, domain_seed):
+    """El CSV empieza con BOM UTF-8 → Excel (Windows) muestra acentos/ñ bien."""
+    r = await client.get("/api/v1/export/activos.csv", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.content.startswith(b"\xef\xbb\xbf"), "Falta el BOM UTF-8 para Excel"
 
 
 @pytest.mark.asyncio

@@ -62,9 +62,18 @@ class Modelo(Base):
         ForeignKey("INV_TIPO_CONEXION.TCN_Tipo_Conexion", ondelete="SET NULL"),
         nullable=True,
     )
+    # Tipo de componente al que pertenece el modelo (Mouse, Laptop…). Nullable
+    # para modelos legados; habilita la cascada de selección en la UI.
+    TAC_Tipo_Activo = Column(
+        Integer,
+        ForeignKey("INV_TIPO_ACTIVO.TAC_Tipo_Activo", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     marca = relationship("Marca", back_populates="modelos")
     tipo_conexion = relationship("TipoConexion", back_populates="modelos")
+    tipo_activo = relationship("TipoActivo")
     activos = relationship("app.models.core.Activo", back_populates="modelo")
 
     __table_args__ = (

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from app.core.errors import internal_error
 from app.core.email import send_notification
+from app.core.transactional import commit_or_409
 
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalogs import EstadoOperativo
@@ -50,7 +52,7 @@ class TraceabilityService:
                 {"nombre": schema.TMO_Nombre},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="TraceabilityService.create_tipo_movimiento")
             await self.db.refresh(obj)
             return obj
         except HTTPException:
@@ -73,7 +75,7 @@ class TraceabilityService:
                 {"id": id, "cambios": schema.model_dump(exclude_unset=True)},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="TraceabilityService.update_tipo_movimiento")
             return obj
         except HTTPException:
             await self.db.rollback(); raise
@@ -95,7 +97,7 @@ class TraceabilityService:
                 {"id": id, "nombre": tipo.TMO_Nombre},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="TraceabilityService.delete_tipo_movimiento")
         except HTTPException:
             await self.db.rollback(); raise
         except Exception as e:
@@ -116,18 +118,22 @@ class TraceabilityService:
         """
         if not usuario_id:
             return ("Sistema", "", None)
-        usu = (await self.db.execute(
-            select(Usuario).where(Usuario.USU_Usuario == usuario_id)
-        )).scalar_one_or_none()
-        if not usu:
+        # Una sola consulta con JOIN (antes eran 2 selects secuenciales).
+        row = (await self.db.execute(
+            select(
+                Usuario.USU_Username, Usuario.USU_Rol,
+                Persona.PER_Primer_Nombre, Persona.PER_Primer_Apellido,
+                Persona.PER_Email_Corporativo,
+            )
+            .join(Persona, Persona.PER_Persona == Usuario.PER_Persona, isouter=True)
+            .where(Usuario.USU_Usuario == usuario_id)
+        )).first()
+        if not row:
             return ("Sistema", "", None)
-        per = (await self.db.execute(
-            select(Persona).where(Persona.PER_Persona == usu.PER_Persona)
-        )).scalar_one_or_none()
-        if not per:
-            return (usu.USU_Username, usu.USU_Rol or "", None)
-        nombre = f"{per.PER_Primer_Nombre} {per.PER_Primer_Apellido}"
-        return (nombre, usu.USU_Rol or "", per.PER_Email_Corporativo)
+        username, rol, nombre, apellido, email = row
+        if nombre:
+            return (f"{nombre} {apellido}", rol or "", email)
+        return (username, rol or "", None)
 
     async def _get_estado_id(self, nombre_ilike: str) -> int | None:
         """Resuelve el id de un EstadoOperativo por nombre (case-insensitive)."""
@@ -199,19 +205,40 @@ class TraceabilityService:
             nuevo = await self.repo.create_movimiento(schema)
 
             # Transición de estado según el tipo de movimiento.
+            # Determinamos el ESTADO OBJETIVO; si lo identificamos pero el
+            # catálogo no lo tiene, FALLAMOS la transacción entera (en vez de
+            # crear el movimiento dejando el estado operativo inconsistente).
             tipo_nombre = await self._get_tipo_movimiento_nombre(schema.TMO_Tipo_Movimiento)
-            nuevo_estado_id: int | None = None
+            target_estado: str | None = None
             if "asign" in tipo_nombre or "préstam" in tipo_nombre or "prestam" in tipo_nombre:
-                nuevo_estado_id = await self._get_estado_id("Asignado")
+                target_estado = "Asignado"
             elif "devol" in tipo_nombre:
-                nuevo_estado_id = await self._get_estado_id("%Bodega%")
+                target_estado = "%Bodega%"
             elif "ingres" in tipo_nombre:
-                nuevo_estado_id = await self._get_estado_id("Disponible")
+                target_estado = "Disponible"
             elif "transfer" in tipo_nombre:
-                nuevo_estado_id = await self._get_estado_id("Asignado")
+                target_estado = "Asignado"
 
-            if nuevo_estado_id and nuevo_estado_id != activo.EOP_Estado_Operativo:
-                await self._set_activo_estado(schema.ACT_Activo, nuevo_estado_id)
+            nuevo_estado_id: int | None = None
+            if target_estado:
+                nuevo_estado_id = await self._get_estado_id(target_estado)
+                if nuevo_estado_id is None:
+                    raise HTTPException(
+                        500, detail="SYSTEM_CONFIG_ERROR_MISSING_OPERATIONAL_STATE"
+                    )
+                if nuevo_estado_id != activo.EOP_Estado_Operativo:
+                    await self._set_activo_estado(schema.ACT_Activo, nuevo_estado_id)
+
+            # Cambio OPCIONAL de hostname del activo al asignarlo a un nuevo
+            # usuario (si no se envía, conserva el actual).
+            if schema.ACT_Hostname is not None and \
+                    (schema.ACT_Hostname or None) != (activo.ACT_Hostname or None):
+                from sqlalchemy import update as _upd
+                from app.models.core import Activo as _Act
+                await self.db.execute(
+                    _upd(_Act).where(_Act.ACT_Activo == schema.ACT_Activo)
+                    .values(ACT_Hostname=schema.ACT_Hostname or None)
+                )
 
             await self.gov_repo.create_audit_log(
                 "ASSIGN", "INV_MOVIMIENTO",
@@ -272,6 +299,11 @@ class TraceabilityService:
             return resultado
         except HTTPException:
             await self.db.rollback(); raise
+        except IntegrityError:
+            # Índice único parcial: otro request abrió un movimiento para el
+            # mismo activo concurrentemente (race en el primer alta sin vigente).
+            await self.db.rollback()
+            raise HTTPException(409, "ASSET_ALREADY_HAS_OPEN_MOVEMENT")
         except Exception as e:
             await self.db.rollback()
             raise internal_error(e, "TRANSACTION_FAILED")
@@ -316,7 +348,11 @@ class TraceabilityService:
             estado_bodega = (await self.db.execute(
                 select(EstadoOperativo).where(EstadoOperativo.EOP_Nombre.ilike("%Bodega%"))
             )).scalar_one_or_none()
-            if estado_bodega and activos_ids:
+            if activos_ids:
+                if not estado_bodega:
+                    raise HTTPException(
+                        500, detail="SYSTEM_CONFIG_ERROR_MISSING_OPERATIONAL_STATE"
+                    )
                 from sqlalchemy import update as sql_update
                 from app.models.core import Activo
                 await self.db.execute(
@@ -379,7 +415,7 @@ class TraceabilityService:
                     ip_origen=ip,
                 )
 
-            await self.db.commit()
+            await commit_or_409(self.db, where="TraceabilityService.offboarding_persona")
 
             # Notificación post-commit
             if algo_cambio:
@@ -447,15 +483,16 @@ class TraceabilityService:
 
             # Devolución → activo vuelve a estado "En Bodega" en la misma transacción.
             estado_bodega_id = await self._get_estado_id("%Bodega%")
-            if estado_bodega_id:
-                await self._set_activo_estado(schema.ACT_Activo, estado_bodega_id)
+            if estado_bodega_id is None:
+                raise HTTPException(500, detail="SYSTEM_CONFIG_ERROR_MISSING_OPERATIONAL_STATE")
+            await self._set_activo_estado(schema.ACT_Activo, estado_bodega_id)
 
             await self.gov_repo.create_audit_log(
                 "RETURN", "INV_MOVIMIENTO",
                 {"activo": str(schema.ACT_Activo), "estado_nuevo": estado_bodega_id},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
+            await commit_or_409(self.db, where="TraceabilityService.registrar_devolucion")
 
             # Notificación post-commit
             try:
@@ -531,8 +568,9 @@ class TraceabilityService:
 
             # Transferencia: el activo sigue "Asignado", garantizamos el estado.
             estado_asignado_id = await self._get_estado_id("Asignado")
-            if estado_asignado_id:
-                await self._set_activo_estado(schema.ACT_Activo, estado_asignado_id)
+            if estado_asignado_id is None:
+                raise HTTPException(500, detail="SYSTEM_CONFIG_ERROR_MISSING_OPERATIONAL_STATE")
+            await self._set_activo_estado(schema.ACT_Activo, estado_asignado_id)
 
             await self.gov_repo.create_audit_log(
                 "TRANSFER", "INV_MOVIMIENTO",
@@ -586,6 +624,9 @@ class TraceabilityService:
             return await self.repo.get_by_id_full(created.MOV_Movimiento)
         except HTTPException:
             await self.db.rollback(); raise
+        except IntegrityError:
+            await self.db.rollback()
+            raise HTTPException(409, "ASSET_ALREADY_HAS_OPEN_MOVEMENT")
         except Exception as e:
             await self.db.rollback()
             raise internal_error(e, "TRANSACTION_FAILED")

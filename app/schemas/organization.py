@@ -31,7 +31,7 @@ class DepartamentoResponse(DepartamentoBase):
 class CargoBase(BaseModel):
     CAR_Nombre: str = Field(..., min_length=3, max_length=100)
     CAR_Es_Jefatura: bool = False
-    CAR_Descripcion: Optional[str] = None
+    CAR_Descripcion: Optional[str] = Field(None, max_length=255)
 
 class CargoCreate(CargoBase):
     pass
@@ -39,7 +39,7 @@ class CargoCreate(CargoBase):
 class CargoUpdate(BaseModel):
     CAR_Nombre: Optional[str] = Field(None, min_length=3, max_length=100)
     CAR_Es_Jefatura: Optional[bool] = None
-    CAR_Descripcion: Optional[str] = None
+    CAR_Descripcion: Optional[str] = Field(None, max_length=255)
 
 class CargoResponse(CargoBase):
     CAR_Cargo: int
@@ -85,12 +85,13 @@ class PersonaResponse(PersonaBase):
 # =======================
 class UsuarioCreate(BaseModel):
     USU_Username: str = Field(..., min_length=4, max_length=50)
-    USU_Password: str = Field(..., min_length=8)
+    # max_length acota el coste de hashing (bcrypt) → evita DoS por password gigante.
+    USU_Password: str = Field(..., min_length=8, max_length=128)
     USU_Rol: str = Field(..., pattern="^(SUPER_ADMIN|ADMIN_TI|TECNICO|CONSULTA)$")
     PER_Persona: uuid.UUID 
 
 class UsuarioUpdate(BaseModel):
-    USU_Password: Optional[str] = Field(None, min_length=8)
+    USU_Password: Optional[str] = Field(None, min_length=8, max_length=128)
     USU_Rol: Optional[str] = Field(None, pattern="^(SUPER_ADMIN|ADMIN_TI|TECNICO|CONSULTA)$")
     USU_Estado: Optional[bool] = None
 
@@ -99,6 +100,8 @@ class UsuarioResponse(BaseModel):
     USU_Username: str
     USU_Rol: str
     USU_Estado: bool
+    USU_2FA_Habilitado: bool = False
+    USU_2FA_Metodo: Optional[str] = None
     USU_Ultimo_Login: Optional[datetime]
     # Usamos PersonaResponse para exponer PER_Persona, PER_Estado, created_at
     # (el frontend los necesita para mostrar nombre completo, estado y ordenar).
