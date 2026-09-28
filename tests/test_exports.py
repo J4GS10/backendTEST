@@ -37,8 +37,8 @@ async def test_export_activos_csv_estructura(client, auth_headers, domain_seed):
 
     headers, rows = _parse_csv(r.text)
     assert headers == [
-        "Codigo_Interno", "Serie_Fabricante", "Hostname", "Tipo_Activo",
-        "Marca", "Modelo", "Estado_Operativo", "Fecha_Compra", "Fin_Garantia", "Costo",
+        "Código interno", "Número de serie", "Hostname", "Tipo de activo",
+        "Marca", "Modelo", "Estado operativo", "Fecha de compra", "Vencimiento de garantía", "Costo",
     ]
     assert len(rows) == 2  # LAP-001 + LAP-002
     codigos = {row[0] for row in rows}
@@ -123,7 +123,7 @@ async def test_export_consistente_con_estado_post_asignacion(
 ):
     """
     Tras una ASIGNACIÓN, el CSV de activos debe mostrar 'Asignado' en la
-    columna Estado_Operativo del activo correspondiente. Este test cierra
+    columna «Estado operativo» del activo correspondiente. Este test cierra
     el ciclo del bug: BD coherente → export coherente.
     """
     d = domain_seed
@@ -154,8 +154,8 @@ async def test_export_auditoria_requiere_super_admin(
     r = await client.get("/api/v1/export/auditoria.csv", headers=auth_headers)
     assert r.status_code == 200
     headers, _ = _parse_csv(r.text)
-    assert "Accion" in headers
-    assert "Snapshot_JSON" in headers
+    assert "Acción" in headers
+    assert "Detalle (JSON)" in headers
 
 
 @pytest.mark.asyncio

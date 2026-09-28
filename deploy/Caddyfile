@@ -27,7 +27,9 @@
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"
-        Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=(), interest-cohort=(), browsing-topics=(), fullscreen=(self), accelerometer=(), gyroscope=(), magnetometer=()"
+        # camera=(self): el escáner QR/código de barras usa la cámara. Este header
+        # REEMPLAZA al de nginx, así que debe permitirla también aquí.
+        Permissions-Policy "geolocation=(), microphone=(), camera=(self), payment=(), usb=(), interest-cohort=(), browsing-topics=(), fullscreen=(self), accelerometer=(), gyroscope=(), magnetometer=()"
         Cross-Origin-Opener-Policy "same-origin"
         Cross-Origin-Resource-Policy "same-origin"
         -Server

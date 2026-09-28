@@ -51,7 +51,7 @@ async def test_exports_csv_nuevos(client, auth_headers, sa_user):
         "CON_Nombre": "Cable export", "CON_Unidad": "u", "CON_Stock_Actual": 2, "CON_Stock_Minimo": 5})
     await client.post("/api/v1/compras/proveedores", headers=auth_headers, json={"PRV_Nombre": "Prov export"})
 
-    for path, prefix in [("consumibles.csv", "Nombre"), ("proveedores.csv", "Nombre"), ("ordenes.csv", "Numero")]:
+    for path, prefix in [("consumibles.csv", "Nombre"), ("proveedores.csv", "Nombre"), ("ordenes.csv", "Número de orden")]:
         r = await client.get(f"/api/v1/export/{path}", headers=auth_headers)
         assert r.status_code == 200, f"{path}: {r.text}"
         assert "text/csv" in r.headers["content-type"]

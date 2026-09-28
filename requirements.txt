@@ -8,10 +8,13 @@ gunicorn>=21.2.0
 # =========================================================================
 # DB
 # =========================================================================
-sqlalchemy>=2.0.25
+# [asyncio] trae greenlet (desde 2.1 ya no viene por defecto) y <2.1 fija la
+# serie probada: una actualización mayor sin probar rompió el build del migrator.
+sqlalchemy[asyncio]>=2.0.25,<2.1
 alembic>=1.13.1
 psycopg[binary,pool]>=3.1.18
 aiosqlite>=0.20.0
+oracledb>=2.2.0
 
 # =========================================================================
 # Validation / Settings
@@ -34,12 +37,15 @@ slowapi>=0.1.9
 redis>=5.0.0
 limits[redis]>=3.13.0
 aiosmtplib>=3.0.0
+# Active Directory (LDAP) — directorio de personas y grupos de notificación
+ldap3>=2.9.1
 jinja2>=3.1.0
 
 # =========================================================================
 # Observability / Logging
 # =========================================================================
 structlog>=24.1.0
+boto3>=1.34.0
 
 # =========================================================================
 # Documentos (actas de entrega en Word .docx y PDF, con logo de empresa)
@@ -60,7 +66,9 @@ qrcode>=7.4.2       # QR de enrolamiento TOTP (usa pillow, ya presente)
 # =========================================================================
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+pypdf>=4.0.0  # tests: extracción de texto de las actas PDF (test_report_translations)
 httpx>=0.27.0
 # Auditoría de vulnerabilidades de dependencias (correr en CI):
 #   pip-audit -r requirements.txt
 pip-audit>=2.7.0
+ruff>=0.8.0

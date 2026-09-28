@@ -5,6 +5,7 @@ campos sensibles (Fernet).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
@@ -68,10 +69,47 @@ class PasswordPolicyError(ValueError):
     """Se lanza cuando la contraseña no cumple la política."""
 
 
-def validate_password_policy(password: str, username: str | None = None) -> None:
+def _strip_affixes(value: str) -> str:
+    """'Verano2026!' -> 'verano': quita dígitos/símbolos al inicio y al final."""
+    start, end = 0, len(value)
+    while start < end and not value[start].isalpha():
+        start += 1
+    while end > start and not value[end - 1].isalpha():
+        end -= 1
+    return value[start:end]
+
+
+def _deleet(value: str) -> str:
+    """Revierte sustituciones típicas (p@ssw0rd -> password)."""
+    return value.translate(str.maketrans({"@": "a", "4": "a", "3": "e", "1": "i", "!": "i",
+                                          "0": "o", "$": "s", "5": "s", "7": "t"}))
+
+
+def _has_sequence(value: str, length: int = 4) -> bool:
+    from app.core.common_passwords import KEYBOARD_SEQUENCES
+    low = value.lower()
+    for i in range(len(low) - length + 1):
+        chunk = low[i:i + length]
+        if any(chunk in seq for seq in KEYBOARD_SEQUENCES):
+            return True
+    return False
+
+
+def _has_repetition(value: str, length: int = 4) -> bool:
+    return any(value[i] * length == value[i:i + length] for i in range(len(value) - length + 1))
+
+
+def validate_password_policy(
+    password: str, username: str | None = None, personal_data: list[str] | None = None,
+) -> None:
     """
     Aplica la política configurada. Lanza PasswordPolicyError con detalle.
+
+    `personal_data`: nombres, apellidos y parte local del correo del titular;
+    la contraseña no puede contenerlos.
     """
+    from app.core.common_passwords import COMMON_PASSWORDS
+
     errors = []
     if len(password) < settings.PASSWORD_MIN_LENGTH:
         errors.append(f"min_length:{settings.PASSWORD_MIN_LENGTH}")
@@ -86,17 +124,48 @@ def validate_password_policy(password: str, username: str | None = None) -> None
     ):
         errors.append("require_symbol")
 
-    # Anti-patterns triviales
-    common_bad = {"password", "12345678", "qwerty", "admin", "letmein"}
-    if password.lower() in common_bad:
+    low = password.lower()
+    candidates = {low, _strip_affixes(low), _deleet(low), _strip_affixes(_deleet(low))}
+    if any(c in COMMON_PASSWORDS for c in candidates if c):
         errors.append("too_common")
-    if username and username.lower() in password.lower():
+    if username and len(username) >= 3 and username.lower() in low:
         errors.append("contains_username")
+    blocked = [w.strip().lower() for w in (settings.PASSWORD_BLOCKED_WORDS or "").split(",") if len(w.strip()) >= 4]
+    if any(w in low or w in _deleet(low) for w in blocked):
+        errors.append("contains_blocked_word")
+    personal = [p.strip().lower() for p in (personal_data or []) if p and len(p.strip()) >= 4]
+    if any(p in low or p in _deleet(low) for p in personal):
+        errors.append("contains_personal_data")
+    if _has_repetition(password):
+        errors.append("repeated_chars")
+    if _has_sequence(password):
+        errors.append("sequential_chars")
 
     if errors:
         raise PasswordPolicyError(
             "PASSWORD_POLICY_VIOLATION:" + ",".join(errors)
         )
+
+
+def generate_temporary_password(username: str | None = None, length: int = 16) -> str:
+    """
+    Contraseña temporal aleatoria (CSPRNG) que cumple la política vigente:
+    incluye mayúscula, minúscula, dígito y símbolo, sin caracteres ambiguos
+    (0/O, 1/l/I) para que el administrador pueda dictarla sin errores.
+    """
+    upper, lower, digits, symbols = "ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnopqrstuvwxyz", "23456789", "#$%&*+-=?@"
+    alphabet = upper + lower + digits + symbols
+    length = max(length, settings.PASSWORD_MIN_LENGTH, 12)
+    while True:
+        chars = [secrets.choice(upper), secrets.choice(lower), secrets.choice(digits), secrets.choice(symbols)]
+        chars += [secrets.choice(alphabet) for _ in range(length - len(chars))]
+        secrets.SystemRandom().shuffle(chars)
+        candidate = "".join(chars)
+        try:
+            validate_password_policy(candidate, username=username)
+            return candidate
+        except PasswordPolicyError:
+            continue
 
 
 # =========================================================================
@@ -110,10 +179,15 @@ def _create_token(
     role: str,
     token_type: TokenType,
     expires_delta: timedelta,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
     to_encode = {
+        **(extra or {}),
         "iat": now,
+        # iat del JWT es entero (segundos). iat_ms permite comparar con precisión
+        # contra una revocación global ocurrida en el mismo segundo.
+        "iat_ms": int(now.timestamp() * 1000),
         "exp": now + expires_delta,
         "sub": str(subject),
         "role": role,
@@ -123,16 +197,42 @@ def _create_token(
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
+def token_issued_at(payload: dict) -> datetime | None:
+    """Instante de emisión (naive UTC) con precisión de ms si el token la trae."""
+    if payload.get("iat_ms"):
+        return datetime.fromtimestamp(payload["iat_ms"] / 1000, tz=timezone.utc).replace(tzinfo=None)
+    if payload.get("iat"):
+        return datetime.fromtimestamp(payload["iat"], tz=timezone.utc).replace(tzinfo=None)
+    return None
+
+
 def create_access_token(
-    subject: str | Any, role: str, expires_delta: Optional[timedelta] = None
+    subject: str | Any, role: str, expires_delta: Optional[timedelta] = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
+    """`extra`: restricciones de sesión (ver app/services/session_policy.py)."""
     delta = expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    return _create_token(subject, role, "access", delta)
+    return _create_token(subject, role, "access", delta, extra=extra)
 
 
-def create_refresh_token(subject: str | Any, role: str) -> str:
-    delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    return _create_token(subject, role, "refresh", delta)
+def create_refresh_token(
+    subject: str | Any, role: str, auth_time: int | None = None,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """
+    `auth_time` (epoch s) = momento del login original. Se conserva al rotar,
+    para aplicar SESSION_ABSOLUTE_MAX_HOURS. El refresh nunca vive más allá
+    de ese límite absoluto.
+    """
+    now = int(datetime.now(timezone.utc).timestamp())
+    auth_time = auth_time or now
+    session_end = auth_time + settings.SESSION_ABSOLUTE_MAX_HOURS * 3600
+    delta = timedelta(seconds=max(0, min(
+        settings.SESSION_IDLE_TIMEOUT_MINUTES * 60,   # inactividad (se renueva al rotar)
+        settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,   # tope de vida del token
+        session_end - now,                            # tope absoluto de la sesión
+    )))
+    return _create_token(subject, role, "refresh", delta, extra={**(extra or {}), "auth_time": auth_time})
 
 
 def create_2fa_challenge_token(username: str) -> str:
@@ -202,6 +302,28 @@ def totp_provisioning_uri(secret: str, username: str, issuer: str) -> str:
     return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer)
 
 
+def totp_matched_step(secret: str, code: str) -> int | None:
+    """
+    Paso temporal (contador de 30 s) al que corresponde el código, con
+    tolerancia de ±1 ventana por desfase de reloj; None si no es válido.
+    Permite rechazar la REUTILIZACIÓN de un código ya aceptado (replay).
+    """
+    import time
+    import pyotp
+    code = (code or "").strip()
+    if not secret or not code.isdigit():
+        return None
+    try:
+        totp = pyotp.TOTP(secret)
+        now_step = int(time.time()) // totp.interval
+        for step in (now_step - 1, now_step, now_step + 1):
+            if hmac.compare_digest(totp.generate_otp(step), code):
+                return step
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def verify_totp(secret: str, code: str) -> bool:
     """Valida un código TOTP con tolerancia de ±1 ventana (desfase de reloj)."""
     import pyotp
@@ -266,7 +388,7 @@ def encrypt_field(value: str | None) -> str | None:
         import structlog
         structlog.get_logger("security").warning(
             "encrypt_field.no_key — el valor se guarda en CLARO. "
-            "Configura FIELD_ENCRYPTION_KEY para activar cifrado."
+            "Configure FIELD_ENCRYPTION_KEY para activar cifrado."
         )
         return value
     return fernet.encrypt(value.encode()).decode()
@@ -292,3 +414,15 @@ def decrypt_field(value: str | None) -> str | None:
         if settings.IS_PRODUCTION:
             raise ValueError("FIELD_DECRYPT_FAILED")
         return value
+
+
+def fingerprint_field(value: str) -> str:
+    """
+    Huella deterministica para campos sensibles cifrados.
+
+    Fernet es no deterministico, por diseno, asi que no sirve para detectar
+    duplicados. Esta huella usa HMAC-SHA256 con SECRET_KEY: permite imponer
+    unicidad sin guardar el dato sensible en claro ni como hash sin clave.
+    """
+    normalized = (value or "").strip().encode("utf-8")
+    return hmac.new(settings.SECRET_KEY.encode("utf-8"), normalized, hashlib.sha256).hexdigest()

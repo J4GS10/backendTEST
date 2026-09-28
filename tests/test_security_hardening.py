@@ -23,12 +23,15 @@ async def test_refresh_rotates_and_detects_reuse(client, sa_user):
     """El refresh token se rota en cada uso; reusar el viejo → 401."""
     r = await _login(client)
     assert r.status_code == 200
-    old_refresh = r.json()["refresh_token"]
+    assert "refresh_token" not in r.json()
+    old_refresh = client.cookies.get("rtk")
+    assert old_refresh
 
     # Primer uso: OK y devuelve un refresh NUEVO (distinto del usado).
     r1 = await client.post("/api/v1/login/refresh", json={"refresh_token": old_refresh})
     assert r1.status_code == 200, r1.text
-    new_refresh = r1.json().get("refresh_token")
+    assert "refresh_token" not in r1.json()
+    new_refresh = client.cookies.get("rtk")
     assert new_refresh and new_refresh != old_refresh
 
     # Reuso del refresh viejo → revocado por la rotación.
@@ -65,6 +68,7 @@ async def test_login_sets_httponly_refresh_cookie(client, sa_user):
     """El login setea el refresh token en una cookie HttpOnly."""
     r = await _login(client)
     assert r.status_code == 200
+    assert "refresh_token" not in r.json()
     set_cookie = r.headers.get("set-cookie", "")
     assert "rtk=" in set_cookie
     assert "HttpOnly" in set_cookie
@@ -143,7 +147,7 @@ async def test_patch_usuario_empty_body_is_noop_not_500(client, auth_headers, do
     await session.commit()
     cr = await client.post("/api/v1/org/usuarios", headers=auth_headers, json={
         "USU_Username": "pat_test", "USU_Password": "Patito#2026",
-        "USU_Rol": "TECNICO", "PER_Persona": str(p.PER_Persona)})
+        "USU_Rol": "TECNICO", "USU_Alcance_Global": True, "PER_Persona": str(p.PER_Persona)})
     assert cr.status_code == 201, cr.text
     uid = cr.json()["USU_Usuario"]
     # PATCH vacío → no-op, debe devolver 200 (antes daba 500 por "SET  WHERE").
@@ -177,31 +181,39 @@ async def test_admin_ti_cannot_escalate_user_to_admin_roles(client, auth_headers
                     DEP_Departamento=alice.DEP_Departamento, CAR_Cargo=alice.CAR_Cargo)
     session.add_all([p_adm, p_con])
     await session.commit()
-    # sa crea un ADMIN_TI
+    # sa crea un ADMIN_TI (contraseña temporal: debe cambiarla al entrar)
     r = await client.post("/api/v1/org/usuarios", headers=auth_headers, json={
         "USU_Username": "adm_test", "USU_Password": "Escalada#2026",
-        "USU_Rol": "ADMIN_TI", "PER_Persona": str(p_adm.PER_Persona)})
+        "USU_Rol": "ADMIN_TI", "USU_Alcance_Global": True, "PER_Persona": str(p_adm.PER_Persona)})
     assert r.status_code == 201, r.text
+    assert r.json()["USU_Debe_Cambiar_Password"] is True
     lr = await client.post(
         "/api/v1/login/access-token",
         data={"username": "adm_test", "password": "Escalada#2026"},
         headers={"Content-Type": "application/x-www-form-urlencoded"})
+    body = lr.json()
+    assert body["restriction"] == "PASSWORD_CHANGE_REQUIRED"
+    tmp = {"Authorization": f"Bearer {body['access_token']}"}
+    # Con la sesión restringida no puede operar nada salvo cambiar su contraseña.
+    assert (await client.get("/api/v1/org/usuarios", headers=tmp)).json()["detail"] == "PASSWORD_CHANGE_REQUIRED"
+    ch = await client.post("/api/v1/me/password", headers=tmp,
+                           json={"current_password": "Escalada#2026", "new_password": "Definitiva#2026x"})
+    assert ch.status_code == 204, ch.text
+    lr = await client.post(
+        "/api/v1/login/access-token",
+        data={"username": "adm_test", "password": "Definitiva#2026x"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    assert lr.json()["restriction"] is None
     adm = {"Authorization": f"Bearer {lr.json()['access_token']}"}
-    # ese ADMIN_TI crea un CONSULTA
+    # Separación de funciones: ADMIN_TI no administra cuentas (ni crear ni elevar).
     cr = await client.post("/api/v1/org/usuarios", headers=adm, json={
         "USU_Username": "cons_test", "USU_Password": "Consulta#2026",
-        "USU_Rol": "CONSULTA", "PER_Persona": str(p_con.PER_Persona)})
-    assert cr.status_code == 201, cr.text
-    cid = cr.json()["USU_Usuario"]
-    # EXPLOIT bloqueado: ADMIN_TI no puede elevar a SUPER_ADMIN ni a ADMIN_TI
-    ex = await client.patch(f"/api/v1/org/usuarios/{cid}", headers=adm, json={"USU_Rol": "SUPER_ADMIN"})
+        "USU_Rol": "CONSULTA", "USU_Alcance_Global": True, "PER_Persona": str(p_con.PER_Persona)})
+    assert cr.status_code == 403
+    assert (await client.get("/api/v1/org/usuarios", headers=adm)).status_code == 403
+    ex = await client.patch(f"/api/v1/org/usuarios/{r.json()['USU_Usuario']}", headers=adm,
+                            json={"USU_Rol": "SUPER_ADMIN"})
     assert ex.status_code == 403
-    assert ex.json()["detail"] == "ONLY_SUPER_ADMIN_CAN_GRANT_ADMIN_ROLES"
-    ex2 = await client.patch(f"/api/v1/org/usuarios/{cid}", headers=adm, json={"USU_Rol": "ADMIN_TI"})
-    assert ex2.status_code == 403
-    # Control positivo: un SUPER_ADMIN sí puede cambiar el rol (a uno no-admin)
-    ok = await client.patch(f"/api/v1/org/usuarios/{cid}", headers=auth_headers, json={"USU_Rol": "TECNICO"})
-    assert ok.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -223,7 +235,7 @@ async def test_role_change_is_audited_with_before_after_diff(client, auth_header
 
     cr = await client.post("/api/v1/org/usuarios", headers=auth_headers, json={
         "USU_Username": "diff_test", "USU_Password": "Diferencia#2026",
-        "USU_Rol": "CONSULTA", "PER_Persona": str(p.PER_Persona)})
+        "USU_Rol": "CONSULTA", "USU_Alcance_Global": True, "PER_Persona": str(p.PER_Persona)})
     assert cr.status_code == 201, cr.text
     uid = cr.json()["USU_Usuario"]
 

@@ -10,6 +10,10 @@ class AdjuntoResponse(BaseModel):
     ADJ_Nombre_Original: str
     ADJ_Tipo_MIME: Optional[str] = None
     ADJ_Tamano_Bytes: int
+    ADJ_Storage_Backend: str = "local"
+    ADJ_Bucket: Optional[str] = None
+    ADJ_Object_Key: Optional[str] = None
+    ADJ_Checksum_SHA256: Optional[str] = None
     ADJ_Categoria: str
     ADJ_Descripcion: Optional[str] = None
     ADJ_Fecha_Subida: datetime

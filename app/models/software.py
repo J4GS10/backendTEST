@@ -1,7 +1,7 @@
 import uuid
 from sqlalchemy import (
-    Column, Integer, String, ForeignKey, Date, Boolean, Uuid,
-    CheckConstraint, UniqueConstraint,
+    Column, Integer, String, ForeignKey, Date, DateTime, Boolean, Uuid,
+    CheckConstraint, UniqueConstraint, Index, func,
 )
 from sqlalchemy.orm import relationship
 from app.db.base import Base
@@ -68,6 +68,12 @@ class Licencia(Base):
     software = relationship("Software", back_populates="licencias")
     tipo_licencia = relationship("TipoLicencia", back_populates="licencias")
     instalaciones = relationship("Instalacion", back_populates="licencia")
+    claves = relationship(
+        "LicenciaClave",
+        back_populates="licencia",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -83,6 +89,34 @@ class Licencia(Base):
 # ==========================================
 # 4. INSTALACIÓN
 # ==========================================
+class LicenciaClave(Base):
+    __tablename__ = "INV_LICENCIA_CLAVE"
+
+    LCL_Licencia_Clave = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    LIC_Licencia = Column(
+        Integer,
+        ForeignKey("INV_LICENCIA.LIC_Licencia", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    LCL_Clave_Activacion = Column(String(1000), nullable=False)
+    LCL_Clave_Hash = Column(String(64), nullable=False)
+    LCL_Referencia = Column(String(120), nullable=True)
+    LCL_Estado = Column(String(20), nullable=False, default="DISPONIBLE")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    licencia = relationship("Licencia", back_populates="claves")
+    instalaciones = relationship("Instalacion", back_populates="licencia_clave")
+
+    __table_args__ = (
+        UniqueConstraint("LCL_Clave_Hash", name="uq_licencia_clave_hash"),
+        CheckConstraint(
+            "\"LCL_Estado\" IN ('DISPONIBLE', 'ASIGNADA', 'RETIRADA')",
+            name="ck_licencia_clave_estado_valido",
+        ),
+    )
+
+
 class Instalacion(Base):
     __tablename__ = "INV_INSTALACION"
 
@@ -93,13 +127,54 @@ class Instalacion(Base):
     ACT_Activo = Column(
         Uuid,
         ForeignKey("INV_ACTIVO.ACT_Activo", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    PER_Persona = Column(
+        Uuid,
+        ForeignKey("INV_PERSONA.PER_Persona", ondelete="CASCADE"),
+        nullable=True,
     )
     LIC_Licencia = Column(
         Integer,
         ForeignKey("INV_LICENCIA.LIC_Licencia", ondelete="RESTRICT"),
         nullable=False,
     )
+    LCL_Licencia_Clave = Column(
+        Integer,
+        ForeignKey("INV_LICENCIA_CLAVE.LCL_Licencia_Clave", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     activo = relationship("app.models.core.Activo", backref="instalaciones")
+    persona = relationship("app.models.organization.Persona", backref="licencias_asignadas")
     licencia = relationship("Licencia", back_populates="instalaciones")
+    licencia_clave = relationship("LicenciaClave", back_populates="instalaciones")
+
+    __table_args__ = (
+        CheckConstraint(
+            '("ACT_Activo" IS NOT NULL AND "PER_Persona" IS NULL) '
+            'OR ("ACT_Activo" IS NULL AND "PER_Persona" IS NOT NULL)',
+            name="ck_instalacion_destino_xor",
+        ),
+        Index(
+            "uq_instalacion_activo_licencia_activa",
+            "ACT_Activo", "LIC_Licencia",
+            unique=True,
+            postgresql_where=(INS_Estado.is_(True) & ACT_Activo.is_not(None)),
+            sqlite_where=(INS_Estado.is_(True) & ACT_Activo.is_not(None)),
+        ),
+        Index(
+            "uq_instalacion_persona_licencia_activa",
+            "PER_Persona", "LIC_Licencia",
+            unique=True,
+            postgresql_where=(INS_Estado.is_(True) & PER_Persona.is_not(None)),
+            sqlite_where=(INS_Estado.is_(True) & PER_Persona.is_not(None)),
+        ),
+        Index(
+            "uq_instalacion_clave_activa",
+            "LCL_Licencia_Clave",
+            unique=True,
+            postgresql_where=(INS_Estado.is_(True) & LCL_Licencia_Clave.is_not(None)),
+            sqlite_where=(INS_Estado.is_(True) & LCL_Licencia_Clave.is_not(None)),
+        ),
+    )

@@ -11,18 +11,22 @@ if sys.platform == "win32":
 
 import structlog
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from starlette.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.email import email_delivery_metrics
 from app.core.limiter import limiter
+from app.core.read_routing import read_routing_service
+from app.core.storage import storage_service
 from app.api.v1.api import api_router
-from app.db.session import engine
+from app.db.resilience import probe_database
+from app.db.session import engine, read_engine, reporting_session
 
 
 # =========================================================================
@@ -56,11 +60,41 @@ log = structlog.get_logger(__name__)
 # =========================================================================
 # LIFESPAN
 # =========================================================================
+async def _check_db_rls() -> None:
+    """
+    Verifica la capa RLS de PostgreSQL (rol restringido + políticas). Sin ella,
+    el alcance por sede sigue aplicándose en la aplicación, pero se registra
+    como error: la defensa en profundidad está incompleta.
+    """
+    from app.core.data_scope import set_db_rls_available
+    if not settings.DB_RLS_ENABLED or engine.dialect.name != "postgresql":
+        set_db_rls_available(False)
+        return
+    from app.db.rls import check_rls
+    try:
+        async with engine.connect() as conn:
+            ok, reason = await conn.run_sync(check_rls)
+    except Exception as exc:  # noqa: BLE001
+        ok, reason = False, f"check_failed:{type(exc).__name__}"
+    set_db_rls_available(ok)
+    if ok:
+        log.info("rls.db_layer_active", role=settings.DB_RLS_ROLE)
+    else:
+        log.error("rls.db_layer_unavailable", reason=reason,
+                  hint="python -m app.db.install_rls (ver DEPLOYMENT.md)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("app.startup", env=settings.ENVIRONMENT, project=settings.PROJECT_NAME)
+    await _check_db_rls()
+    from app.services.scheduled_jobs import start_background_jobs, stop_background_jobs
+    jobs = start_background_jobs()
     yield
+    await stop_background_jobs(jobs)
     await engine.dispose()
+    if read_engine is not engine:
+        await read_engine.dispose()
     log.info("app.shutdown")
 
 
@@ -140,7 +174,7 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = (
-        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
+        "geolocation=(), microphone=(), camera=(self), payment=(), usb=(), "
         "interest-cohort=(), browsing-topics=(), fullscreen=(self), "
         "accelerometer=(), gyroscope=(), magnetometer=()"
     )
@@ -163,6 +197,16 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
 
 @app.exception_handler(SQLAlchemyError)
 async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
+    orig = getattr(exc, "orig", None)
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if sqlstate == "42501":
+        # Política RLS o permiso del rol restringido: el registro está fuera
+        # del alcance del usuario (la validación de la aplicación no lo atajó).
+        log.warning("rls.denied", path=str(request.url), error=str(orig)[:200])
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "SEDE_OUT_OF_SCOPE"},
+        )
     log.error("db.error", path=str(request.url), error=str(exc))
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -174,7 +218,7 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": "VALIDATION_ERROR", "errors": exc.errors()},
+        content={"detail": "VALIDATION_ERROR", "errors": jsonable_encoder(exc.errors())},
     )
 
 
@@ -187,17 +231,20 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 @app.get("/health", tags=["Health"])
 async def health_check():
     """Liveness + DB ping. Usar para load balancer / kubernetes."""
-    db_ok = False
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        db_ok = True
-    except Exception as exc:  # noqa: BLE001
-        log.warning("health.db_failed", error=str(exc))
+    writer_probe = await probe_database(
+        engine,
+        retries=settings.DB_FAILOVER_PROBE_RETRIES,
+        timeout_seconds=settings.DB_CONNECT_TIMEOUT_SECONDS,
+        retry_delay_seconds=settings.DB_FAILOVER_RETRY_DELAY_SECONDS,
+    )
+    db_ok = writer_probe.available
+    if not db_ok:
+        log.warning("health.db_failed", error=writer_probe.error)
 
     payload = {
         "status": "ok" if db_ok else "degraded",
         "database": "ok" if db_ok else "down",
+        "writer_probe_attempts": writer_probe.attempts,
         "version": "1.2.0",
         "environment": settings.ENVIRONMENT,
     }
@@ -212,12 +259,31 @@ async def health_full():
     """
     db_ok = False
     redis_ok: bool | None = None
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        db_ok = True
-    except Exception as exc:  # noqa: BLE001
-        log.warning("health.db_failed", error=str(exc))
+    storage_ok: bool | None = None
+    writer_probe = await probe_database(
+        engine,
+        retries=settings.DB_FAILOVER_PROBE_RETRIES,
+        timeout_seconds=settings.DB_CONNECT_TIMEOUT_SECONDS,
+        retry_delay_seconds=settings.DB_FAILOVER_RETRY_DELAY_SECONDS,
+    )
+    db_ok = writer_probe.available
+    if not db_ok:
+        log.warning("health.db_failed", error=writer_probe.error)
+
+    if settings.HAS_READ_REPLICA:
+        try:
+            async with read_engine.connect() as conn:
+                replica_status = await read_routing_service.inspect(conn)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("health.replica_failed", error=str(exc))
+            replica_status = read_routing_service.mark_unavailable(type(exc).__name__)
+    else:
+        replica_status = read_routing_service.classify(
+            configured=False,
+            available=False,
+            is_standby=None,
+            lag_seconds=None,
+        )
 
     try:
         from app.core.cache import get_redis
@@ -231,14 +297,42 @@ async def health_full():
         log.warning("health.redis_failed", error=str(exc))
         redis_ok = False
 
-    status_global = "ok" if db_ok and (redis_ok is not False) else "degraded"
-    code = 200 if status_global == "ok" else 503
+    try:
+        storage_ok = await storage_service.health()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("health.storage_failed", error=str(exc))
+        storage_ok = False
+
+    smtp_metrics = email_delivery_metrics()
+
+    optional_degraded = (
+        redis_ok is False
+        or storage_ok is False
+        or smtp_metrics["status"] == "down"
+        or (
+            replica_status.configured
+            and not replica_status.suitable_for_reporting
+        )
+    )
+    status_global = "down" if not db_ok else ("degraded" if optional_degraded else "ok")
+    # Solo el writer es dependencia fatal. Réplica y Redis degradan con 200.
+    code = 503 if not db_ok else 200
     payload = {
         "status": status_global,
         "components": {
             "database": "ok" if db_ok else "down",
+            "writer_database": "ok" if db_ok else "down",
+            "writer_probe_attempts": writer_probe.attempts,
+            "read_replica": replica_status.status,
+            "read_replica_details": replica_status.as_dict(),
+            "replica_lag_seconds": replica_status.lag_seconds,
             "redis": "ok" if redis_ok else ("disabled" if redis_ok is None else "down"),
+            "storage": "ok" if storage_ok else "down",
+            "storage_backend": settings.STORAGE_BACKEND,
+            "smtp": smtp_metrics["status"],
+            "smtp_details": smtp_metrics,
         },
+        "read_routing": read_routing_service.metrics(),
         "version": "1.2.0",
         "environment": settings.ENVIRONMENT,
     }
@@ -262,14 +356,18 @@ async def metrics():
 
     lines: list[str] = []
     try:
-        async with engine.connect() as conn:
-            total_activos = (await conn.execute(select(func.count()).select_from(Activo))).scalar() or 0
+        async with reporting_session() as db:
+            total_activos = (await db.execute(select(func.count()).select_from(Activo))).scalar() or 0
             total_users_active = (
-                await conn.execute(
+                await db.execute(
                     select(func.count()).select_from(Usuario).where(Usuario.USU_Estado == True)  # noqa: E712
                 )
             ).scalar() or 0
-            total_revoked = (await conn.execute(select(func.count()).select_from(TokenRevocado))).scalar() or 0
+            total_revoked = (await db.execute(select(func.count()).select_from(TokenRevocado))).scalar() or 0
+            from app.models.governance import EmailOutbox
+            outbox = dict((await db.execute(
+                select(EmailOutbox.EOB_Estado, func.count()).group_by(EmailOutbox.EOB_Estado)
+            )).all())
     except Exception as exc:  # noqa: BLE001
         log.warning("metrics.query_failed", error=str(exc))
         return JSONResponse(status_code=503, content={"status": "metrics_unavailable"})
@@ -283,6 +381,41 @@ async def metrics():
     lines.append("# HELP inv_tokens_revocados Filas en SYS_TOKEN_REVOCADO (pendientes de purga)")
     lines.append("# TYPE inv_tokens_revocados gauge")
     lines.append(f"inv_tokens_revocados {total_revoked}")
+    lines.append("# HELP inv_email_outbox Correos en la cola persistente por estado")
+    lines.append("# TYPE inv_email_outbox gauge")
+    for estado in ("PENDIENTE", "ENVIADO", "FALLIDO"):
+        lines.append(f'inv_email_outbox{{estado="{estado}"}} {outbox.get(estado, 0)}')
+    replica = read_routing_service.last_status
+    routing_metrics = read_routing_service.metrics()
+    lines.append("# HELP inv_db_replica_available Disponibilidad de la replica de lectura")
+    lines.append("# TYPE inv_db_replica_available gauge")
+    lines.append(f"inv_db_replica_available {1 if replica.available else 0}")
+    lines.append("# HELP inv_db_replica_suitable Apta para lecturas de reporting")
+    lines.append("# TYPE inv_db_replica_suitable gauge")
+    lines.append(
+        f"inv_db_replica_suitable {1 if replica.suitable_for_reporting else 0}"
+    )
+    lines.append("# HELP inv_db_replica_lag_seconds Lag de aplicacion WAL de la replica")
+    lines.append("# TYPE inv_db_replica_lag_seconds gauge")
+    lag_value = replica.lag_seconds if replica.lag_seconds is not None else "NaN"
+    lines.append(f"inv_db_replica_lag_seconds {lag_value}")
+    lines.append("# HELP inv_db_read_fallback_total Fallbacks de reporting al writer")
+    lines.append("# TYPE inv_db_read_fallback_total counter")
+    lines.append(f"inv_db_read_fallback_total {routing_metrics['fallback_total']}")
+    lines.append("# HELP inv_db_replica_reads_total Lecturas dirigidas a la replica")
+    lines.append("# TYPE inv_db_replica_reads_total counter")
+    lines.append(f"inv_db_replica_reads_total {routing_metrics['replica_reads_total']}")
+    storage_available = await storage_service.health()
+    lines.append("# HELP inv_storage_available Disponibilidad del object storage")
+    lines.append("# TYPE inv_storage_available gauge")
+    lines.append(f"inv_storage_available {1 if storage_available else 0}")
+    smtp_metrics = email_delivery_metrics()
+    lines.append("# HELP inv_smtp_delivery_errors_total Errores de entrega SMTP")
+    lines.append("# TYPE inv_smtp_delivery_errors_total counter")
+    lines.append(f"inv_smtp_delivery_errors_total {smtp_metrics['failed_total']}")
+    lines.append("# HELP inv_smtp_delivery_sent_total Correos entregados por SMTP")
+    lines.append("# TYPE inv_smtp_delivery_sent_total counter")
+    lines.append(f"inv_smtp_delivery_sent_total {smtp_metrics['sent_total']}")
 
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")

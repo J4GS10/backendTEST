@@ -57,6 +57,83 @@ async def test_recibir_orden_suma_stock_y_crea_activo(client, auth_headers, doma
 
 
 @pytest.mark.asyncio
+async def test_recibir_linea_con_multiples_activos_serializados(client, auth_headers, domain_seed):
+    h = auth_headers
+    pid = await _proveedor(client, h)
+    orden = (await client.post("/api/v1/compras/ordenes", headers=h, json={
+        "OCO_Numero": "OC-REC-MULTI", "OCO_Fecha": "2026-06-01", "PRV_Proveedor": pid,
+        "lineas": [
+            {"OCL_Descripcion": "Laptops lote", "OCL_Cantidad": 2, "OCL_Precio_Unitario": "1200"},
+        ]})).json()
+    linea = orden["lineas"][0]["OCL_Linea"]
+
+    r = await client.post(f"/api/v1/compras/ordenes/{orden['OCO_Orden']}/recibir", headers=h, json={
+        "activos": [
+            {
+                "OCL_Linea": linea, "ACT_Serie_Fabricante": "REC-MULTI-001",
+                "MOD_Modelo": domain_seed["mod"], "TAC_Tipo_Activo": domain_seed["tac_lap"],
+                "ACT_Fecha_Compra": "2026-06-01",
+            },
+            {
+                "OCL_Linea": linea, "ACT_Serie_Fabricante": "REC-MULTI-002",
+                "MOD_Modelo": domain_seed["mod"], "TAC_Tipo_Activo": domain_seed["tac_lap"],
+                "ACT_Fecha_Compra": "2026-06-01",
+            },
+        ],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["activos_creados"] == 2
+    assert len(body["activos_codigos"]) == 2
+
+    g = (await client.get("/api/v1/compras/garantias?dias=3650", headers=h)).json()
+    proveedores = {
+        x["ACT_Codigo_Interno"]: x["proveedor"]
+        for x in g
+        if x["ACT_Codigo_Interno"] in set(body["activos_codigos"])
+    }
+    assert proveedores == {code: "Distribuidora Recibe" for code in body["activos_codigos"]}
+
+
+@pytest.mark.asyncio
+async def test_recibir_orden_registra_licencias_con_claves(client, auth_headers, domain_seed, software_seed):
+    h = auth_headers
+    pid = await _proveedor(client, h)
+    orden = (await client.post("/api/v1/compras/ordenes", headers=h, json={
+        "OCO_Numero": "OC-REC-LIC", "OCO_Fecha": "2026-06-01", "PRV_Proveedor": pid,
+        "lineas": [
+            {"OCL_Descripcion": "Suite productividad 2 usuarios", "OCL_Cantidad": 2, "OCL_Precio_Unitario": "50"},
+        ]})).json()
+    linea = orden["lineas"][0]["OCL_Linea"]
+
+    r = await client.post(f"/api/v1/compras/ordenes/{orden['OCO_Orden']}/recibir", headers=h, json={
+        "licencias": [{
+            "OCL_Linea": linea,
+            "SOF_Software": software_seed["sof"],
+            "TLI_Tipo_Licencia": software_seed["tli"],
+            "cantidad": 2,
+            "claves": [
+                {"LCL_Clave_Activacion": "KEY-REC-LIC-001", "LCL_Referencia": "Factura A"},
+                {"LCL_Clave_Activacion": "KEY-REC-LIC-002", "LCL_Referencia": "Factura B"},
+            ],
+        }],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["licencias_creadas"] == 1
+    assert body["licencias_claves_creadas"] == 2
+
+    detalle = (await client.get(f"/api/v1/compras/ordenes/{orden['OCO_Orden']}", headers=h)).json()
+    licencia_id = detalle["lineas"][0]["LIC_Licencia"]
+    assert licencia_id is not None
+    licencias = (await client.get(f"/api/v1/soft/licencias?software_id={software_seed['sof']}", headers=h)).json()
+    creada = next(l for l in licencias if l["LIC_Licencia"] == licencia_id)
+    assert creada["LIC_Cantidad_Total"] == 2
+    assert creada["LIC_Claves_Total"] == 2
+    assert creada["LIC_Claves_Disponibles"] == 2
+
+
+@pytest.mark.asyncio
 async def test_recibir_dos_veces_409(client, auth_headers, domain_seed):
     h = auth_headers
     pid = await _proveedor(client, h)

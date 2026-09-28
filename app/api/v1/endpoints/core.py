@@ -2,18 +2,23 @@
 from typing import List
 import uuid
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, PaginationParams, get_client_ip, require_admin, require_operativo
+from app.api.idempotency import _IdempotencyGuard, idempotency_guard
 from app.core.limiter import limiter
 from app.db.session import get_db
 from app.schemas.common import PaginatedResponse
 from app.schemas.core import (
     ActivoCreate, ActivoDetailResponse, ActivoFilter, ActivoResponse, ActivoUpdate,
     EspecificacionCreate, EspecificacionDetalle, EspecificacionValorUpdate,
+    EtiquetasActivosRequest,
 )
 from app.services.core import CoreService
+from app.services.suggestions import SuggestionService
+from app.services.labels import LabelService
 
 router = APIRouter()
 
@@ -48,7 +53,7 @@ async def add_especificacion(
     )
     # Devolvemos la fila enriquecida recién creada.
     specs = await service.list_especificaciones(activo_id)
-    return next((s for s in specs if s["TES_Tipo_Especificacion"] == schema.TES_Tipo_Especificacion), specs[-1])
+    return next((s for s in specs if s.TES_Tipo_Especificacion == schema.TES_Tipo_Especificacion), specs[-1])
 
 
 @router.patch("/especificaciones/{esp_id}", status_code=204, dependencies=OPERATIVO)
@@ -71,9 +76,11 @@ async def delete_especificacion(
 async def create_activo(
     schema: ActivoCreate, request: Request, current_user: CurrentUser,
     service: CoreService = Depends(get_service),
+    idempotency: _IdempotencyGuard = Depends(idempotency_guard),
 ):
-    return await service.create_activo(
-        schema, usuario_id=current_user.USU_Usuario
+    return await idempotency.execute(
+        lambda: service.create_activo(schema, usuario_id=current_user.USU_Usuario),
+        status_code=201,
     )
 
 
@@ -91,6 +98,33 @@ async def list_activos(
     service: CoreService = Depends(get_service),
 ):
     return await service.list_activos(pagination.skip, pagination.limit)
+
+
+@router.get("/activos/by-code/{codigo}", response_model=ActivoDetailResponse)
+async def get_activo_by_codigo(
+    codigo: str,
+    service: CoreService = Depends(get_service),
+):
+    return await service.get_activo_by_codigo(codigo)
+
+
+@router.post("/activos/etiquetas.pdf", response_class=StreamingResponse, dependencies=OPERATIVO)
+async def generar_etiquetas_activos(
+    payload: EtiquetasActivosRequest,
+    lang: str = Query("es", pattern="^(es|en|it)$", description="Idioma de las etiquetas"),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.labels import label_filename
+    buffer = await LabelService(db).generar_pdf_etiquetas(
+        activo_ids=payload.activos_ids,
+        codigos=payload.codigos,
+        lang=lang,
+    )
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{label_filename(lang)}"'},
+    )
 
 
 @router.get("/activos/{activo_id}", response_model=ActivoDetailResponse)
@@ -128,3 +162,9 @@ async def search_activos(
         page=filters.page,
         per_page=filters.per_page,
     )
+
+
+@router.get("/activos/{id}/contexto")
+async def activo_contexto(id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Custodio y área actuales del activo y el tipo de movimiento lógico."""
+    return await SuggestionService(db).activo(id)

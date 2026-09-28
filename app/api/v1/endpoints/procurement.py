@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_client_ip, require_admin
+from app.api.idempotency import _IdempotencyGuard, idempotency_guard
 from app.core.limiter import limiter
-from app.db.session import get_db
+from app.db.session import get_db, get_read_db
 from app.schemas.procurement import (
     GarantiaItem, OrdenCreate, OrdenDetalleResponse, OrdenEstadoUpdate, OrdenResponse,
     ProveedorCreate, ProveedorResponse, ProveedorUpdate, RecepcionOrden, RecepcionResultado,
@@ -19,6 +20,10 @@ ADMIN = [Depends(require_admin)]
 
 
 def get_service(db: AsyncSession = Depends(get_db)) -> ProcurementService:
+    return ProcurementService(db)
+
+
+def get_read_service(db: AsyncSession = Depends(get_read_db)) -> ProcurementService:
     return ProcurementService(db)
 
 
@@ -100,13 +105,17 @@ async def cambiar_estado_orden(
 async def recibir_orden(
     id: int, schema: RecepcionOrden, request: Request, current_user: CurrentUser,
     service: ProcurementService = Depends(get_service),
+    idempotency: _IdempotencyGuard = Depends(idempotency_guard),
 ):
     """
     Recibe la orden (lazo cerrado): suma el stock de los consumibles indicados
     y da de alta los activos indicados (enlazándolos a la orden → alimenta la
     vista de garantías). Marca la orden como RECIBIDA. Todo en una transacción.
     """
-    return await service.recibir_orden(id, schema, **_ctx(request, current_user))
+    return await idempotency.execute(
+        lambda: service.recibir_orden(id, schema, **_ctx(request, current_user)),
+        status_code=200,
+    )
 
 
 # ================= GARANTÍAS =================
@@ -114,7 +123,7 @@ async def recibir_orden(
 async def list_garantias(
     dias: int = Query(90, ge=1, le=3650, description="Ventana de 'por vencer' en días"),
     solo_alertas: bool = Query(False, description="Solo por_vencer + vencida"),
-    service: ProcurementService = Depends(get_service),
+    service: ProcurementService = Depends(get_read_service),
 ):
     return await service.garantias(dias=dias, solo_alertas=solo_alertas)
 

@@ -45,7 +45,7 @@ COPY --chown=appuser:appuser . .
 # Permisos de ejecución para el entrypoint + directorio de adjuntos con dueño
 # appuser (un volumen nombrado montado aquí hereda esta propiedad en su 1ra init,
 # evitando el problema clásico de "volumen root + proceso uid 1001 sin escritura").
-RUN chmod +x /app/entrypoint.sh \
+RUN chmod +x /app/entrypoint.sh /app/migrator.sh \
     && mkdir -p /app/uploads \
     && chown -R appuser:appuser /app/uploads
 
@@ -54,7 +54,7 @@ USER appuser
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl --fail --silent http://127.0.0.1:8000/health || exit 1
+    CMD curl --fail --silent http://127.0.0.1:${PORT:-8000}/health || exit 1
 
-# Aplica migraciones + bootstrap + arranca gunicorn.
+# El ciclo de vida de DB vive en migrator; este entrypoint solo sirve HTTP.
 ENTRYPOINT ["/app/entrypoint.sh"]

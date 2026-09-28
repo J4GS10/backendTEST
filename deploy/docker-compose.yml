@@ -26,6 +26,66 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=replica"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "hot_standby=on"
+      - "-c"
+      - "synchronous_commit=on"
+      - "-c"
+      - "hba_file=/etc/postgresql/pg_hba.conf"
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db_replication_init:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./postgres/init-replication.sh:/usr/local/bin/init-replication.sh:ro
+    command: ["sh", "/usr/local/bin/init-replication.sh"]
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+
+  db_report:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-}
+    volumes:
+      - postgres_report_data:/var/lib/postgresql/data
+      - ./postgres/start-replica.sh:/usr/local/bin/start-replica.sh:ro
+    command: ["sh", "/usr/local/bin/start-replica.sh"]
+    depends_on:
+      db: { condition: service_healthy }
+      db_replication_init: { condition: service_completed_successfully }
     networks: [internal]
     security_opt: ["no-new-privileges:true"]
     mem_limit: 1g
@@ -65,6 +125,41 @@ services:
       timeout: 3s
       retries: 5
 
+  minio:
+    image: minio/minio:latest
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio_init:
+    image: minio/mc:latest
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-lombardi-adjuntos}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set lombardi http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "lombardi/$$S3_BUCKET"
+    depends_on:
+      minio: { condition: service_healthy }
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+
   # MailHog (solo dev): captura SMTP, UI en :8025. `docker compose --profile dev up -d`
   mailhog:
     image: mailhog/mailhog:latest
@@ -73,6 +168,33 @@ services:
     ports: ["8025:8025"]
     networks: [internal]
     security_opt: ["no-new-privileges:true"]
+
+  migrator:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: "no"
+    entrypoint: ["/app/migrator.sh"]
+    environment:
+      ENVIRONMENT: production
+      DB_ENGINE: ${DB_ENGINE:-postgres}
+      DB_WRITE_DSN: ${DB_WRITE_DSN:-}
+      DB_WRITE_HOST: ${DB_WRITE_HOST:-db}
+      POSTGRES_SERVER: ${DB_WRITE_HOST:-db}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: 5432
+      SECRET_KEY: ${SECRET_KEY}
+      FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY}
+      SUPER_ADMIN_USERNAME: ${SUPER_ADMIN_USERNAME:-sa}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-admin@example.com}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
 
   backend:
     build:
@@ -84,20 +206,39 @@ services:
       ENVIRONMENT: production
       DEBUG: "false"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      POSTGRES_SERVER: db
+      DB_ENGINE: ${DB_ENGINE:-postgres}
+      DB_WRITE_DSN: ${DB_WRITE_DSN:-}
+      DB_READ_DSN: ${DB_READ_DSN:-}
+      DB_WRITE_HOST: ${DB_WRITE_HOST:-db}
+      DB_READ_HOST: ${DB_READ_HOST:-db_report}
+      POSTGRES_SERVER: ${DB_WRITE_HOST:-db}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_PORT: 5432
+      POSTGRES_REPLICA_SERVER: ${POSTGRES_REPLICA_SERVER:-db_report}
+      POSTGRES_REPLICA_USER: ${POSTGRES_REPLICA_USER:-${POSTGRES_USER}}
+      POSTGRES_REPLICA_PASSWORD: ${POSTGRES_REPLICA_PASSWORD:-${POSTGRES_PASSWORD}}
+      POSTGRES_REPLICA_DB: ${POSTGRES_REPLICA_DB:-${POSTGRES_DB}}
+      POSTGRES_REPLICA_PORT: ${POSTGRES_REPLICA_PORT:-5432}
+      DB_READ_POOL_SIZE: ${DB_READ_POOL_SIZE:-10}
+      DB_READ_MAX_OVERFLOW: ${DB_READ_MAX_OVERFLOW:-20}
+      DB_CONNECT_TIMEOUT_SECONDS: ${DB_CONNECT_TIMEOUT_SECONDS:-5}
+      DB_FAILOVER_PROBE_RETRIES: ${DB_FAILOVER_PROBE_RETRIES:-1}
+      DB_FAILOVER_RETRY_DELAY_SECONDS: ${DB_FAILOVER_RETRY_DELAY_SECONDS:-0.25}
+      DB_REPLICA_CHECK_TIMEOUT_SECONDS: ${DB_REPLICA_CHECK_TIMEOUT_SECONDS:-2}
+      DB_REPLICA_LAG_WARNING_SECONDS: ${DB_REPLICA_LAG_WARNING_SECONDS:-5}
+      DB_REPLICA_LAG_CRITICAL_SECONDS: ${DB_REPLICA_LAG_CRITICAL_SECONDS:-30}
       DB_ECHO: "false"
       SECRET_KEY: ${SECRET_KEY}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
-      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-1}
       ACCOUNT_LOCKOUT_THRESHOLD: ${ACCOUNT_LOCKOUT_THRESHOLD:-5}
       ACCOUNT_LOCKOUT_MINUTES: ${ACCOUNT_LOCKOUT_MINUTES:-15}
       PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-10}
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-["http://localhost","https://localhost"]}
       RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-5/minute}
+      RATE_LIMIT_REFRESH: ${RATE_LIMIT_REFRESH:-10/minute}
       RATE_LIMIT_DEFAULT: ${RATE_LIMIT_DEFAULT:-100/minute}
       PAGINATION_MAX_LIMIT: ${PAGINATION_MAX_LIMIT:-200}
       REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD}@redis:6379/0}
@@ -108,6 +249,7 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_TLS: ${SMTP_TLS:-true}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-noreply@lombardi.local}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Sistema Inventario Lombardi}
       NOTIFY_ADMIN_EMAILS: ${NOTIFY_ADMIN_EMAILS:-}
@@ -121,10 +263,40 @@ services:
       SEED_DEMO: ${SEED_DEMO:-false}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-10}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-lombardi-adjuntos}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      STORAGE_TIMEOUT_SECONDS: ${STORAGE_TIMEOUT_SECONDS:-5}
+      # Sesiones (ver DEPLOYMENT.md §4.2). La inactividad del frontend
+      # (VITE_SESSION_IDLE_TIMEOUT_MINUTES) debe coincidir.
+      SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-30}
+      SESSION_ABSOLUTE_MAX_HOURS: ${SESSION_ABSOLUTE_MAX_HOURS:-12}
+      REFRESH_REUSE_GRACE_SECONDS: ${REFRESH_REUSE_GRACE_SECONDS:-30}
+      REFRESH_COOKIE_PERSISTENT: ${REFRESH_COOKIE_PERSISTENT:-false}
+      # Cola persistente de correos
+      OUTBOX_MAX_ATTEMPTS: ${OUTBOX_MAX_ATTEMPTS:-7}
+      OUTBOX_POLL_SECONDS: ${OUTBOX_POLL_SECONDS:-15}
+      OUTBOX_RETENTION_DAYS: ${OUTBOX_RETENTION_DAYS:-30}
+      # Active Directory (ver DEPLOYMENT.md §4.1)
+      AD_ENABLED: ${AD_ENABLED:-false}
+      AD_SERVER: ${AD_SERVER:-}
+      AD_START_TLS: ${AD_START_TLS:-false}
+      AD_VERIFY_CERT: ${AD_VERIFY_CERT:-true}
+      AD_CA_CERT_FILE: ${AD_CA_CERT_FILE:-}
+      AD_BIND_USER: ${AD_BIND_USER:-}
+      AD_BIND_PASSWORD: ${AD_BIND_PASSWORD:-}
+      AD_BASE_DN: ${AD_BASE_DN:-}
+      AD_GROUP_BASE_DN: ${AD_GROUP_BASE_DN:-}
+      AD_ADMIN_GROUP: ${AD_ADMIN_GROUP:-}
+      AD_SYNC_INTERVAL_MINUTES: ${AD_SYNC_INTERVAL_MINUTES:-0}
+      AD_SYNC_DEACTIVATE: ${AD_SYNC_DEACTIVATE:-true}
     volumes:
       - adjuntos_data:/app/uploads
     depends_on:
-      db: { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     networks: [internal]
     security_opt: ["no-new-privileges:true"]
@@ -141,10 +313,12 @@ services:
 
   frontend:
     build:
-      context: ../../inventario-ti-frontend   # repo hermano
+      # Repo hermano del frontend (ajustable si la carpeta se llama distinto).
+      context: ${FRONTEND_CONTEXT:-../../inventario-ti-frontend}
       dockerfile: Dockerfile
       args:
         VITE_API_URL: /api/v1
+        VITE_SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-30}
     restart: always
     depends_on:
       backend: { condition: service_healthy }
@@ -187,6 +361,8 @@ networks:
 
 volumes:
   postgres_data:
+  postgres_report_data:
   caddy_data:
   caddy_config:
   adjuntos_data:
+  minio_data:

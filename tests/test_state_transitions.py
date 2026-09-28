@@ -151,15 +151,15 @@ async def test_no_se_puede_asignar_activo_de_baja(client, auth_headers, domain_s
         headers=auth_headers,
     )
     assert r.status_code == 400
-    assert r.json()["detail"] == "CANNOT_ASSIGN_DECOMMISSIONED_ASSET"
+    assert r.json()["detail"]["error"] == "INVALID_STATE_TRANSITION"
+    assert "Baja" in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
-async def test_re_asignacion_cierra_movimiento_previo(client, auth_headers, domain_seed, session):
-    """
-    Asignar a alice + asignar de nuevo a bob debe cerrar el primer movimiento
-    y dejar UN SOLO movimiento abierto (el de bob), con estado 'Asignado'.
-    """
+async def test_re_asignacion_directa_falla_y_exige_transferencia(
+    client, auth_headers, domain_seed, session,
+):
+    """Una asignacion directa no debe cerrar una custodia vigente implicitamente."""
     d = domain_seed
     await client.post(
         "/api/v1/trazabilidad/movimientos",
@@ -169,7 +169,7 @@ async def test_re_asignacion_cierra_movimiento_previo(client, auth_headers, doma
         },
         headers=auth_headers,
     )
-    await client.post(
+    r = await client.post(
         "/api/v1/trazabilidad/movimientos",
         json={
             "ACT_Activo": d["act_1"], "PER_Persona": d["bob"],
@@ -177,9 +177,40 @@ async def test_re_asignacion_cierra_movimiento_previo(client, auth_headers, doma
         },
         headers=auth_headers,
     )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "ASSET_ALREADY_ASSIGNED_USE_TRANSFER"
     assert await _movimientos_abiertos(session, d["act_1"]) == 1
     estado = await _estado_activo(session, d["act_1"])
     assert estado == d["eop_asig"]
+
+
+@pytest.mark.asyncio
+async def test_asignacion_falla_si_activo_esta_en_reparacion(
+    client, auth_headers, domain_seed, session,
+):
+    """Un activo en reparacion no puede asignarse hasta cerrar el ticket."""
+    from sqlalchemy import update
+
+    d = domain_seed
+    await session.execute(
+        update(Activo)
+        .where(Activo.ACT_Activo == _u(d["act_1"]))
+        .values(EOP_Estado_Operativo=d["eop_rep"])
+    )
+    await session.commit()
+
+    r = await client.post(
+        "/api/v1/trazabilidad/movimientos",
+        json={
+            "ACT_Activo": d["act_1"], "PER_Persona": d["alice"],
+            "ARE_Area": d["area"], "TMO_Tipo_Movimiento": d["tmo_asg"],
+        },
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "INVALID_STATE_TRANSITION"
+    assert "Reparación" in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -193,3 +224,75 @@ async def test_devolucion_falla_si_no_hay_asignacion(client, auth_headers, domai
     )
     assert r.status_code == 400
     assert r.json()["detail"] == "ASSET_IS_NOT_ASSIGNED"
+
+
+# ── Tests de calidad arquitectónica ─────────────────────────────────────────
+
+
+def test_state_machine_raises_domain_exception_not_http():
+    """
+    AssetStateMachine.validate_transition NO debe elevar HTTPException.
+    Eleva InvalidStateTransitionError (dominio puro, sin dependencia de FastAPI).
+    La traducción a HTTPException ocurre en la capa de servicio.
+    """
+    from fastapi import HTTPException
+
+    from app.core.errors import InvalidStateTransitionError
+    from app.models.enums import EstadoOperativoEnum
+    from app.services.state_machine import AssetStateMachine
+
+    with pytest.raises(InvalidStateTransitionError) as exc_info:
+        AssetStateMachine.validate_transition(
+            EstadoOperativoEnum.BAJA,
+            EstadoOperativoEnum.ASIGNADO,
+        )
+
+    exc = exc_info.value
+    assert exc.code == "INVALID_STATE_TRANSITION"
+    assert exc.current_state == EstadoOperativoEnum.BAJA.value
+    assert exc.target_state == EstadoOperativoEnum.ASIGNADO.value
+    assert not isinstance(exc, HTTPException), (
+        "InvalidStateTransitionError NO debe ser HTTPException — "
+        "el dominio no debe depender del framework web."
+    )
+
+
+def test_state_machine_noop_same_state():
+    """Una transición al mismo estado no lanza excepción."""
+    from app.models.enums import EstadoOperativoEnum
+    from app.services.state_machine import AssetStateMachine
+
+    for estado in EstadoOperativoEnum:
+        AssetStateMachine.validate_transition(estado, estado)  # no debe lanzar
+
+
+@pytest.mark.asyncio
+async def test_search_activos_pagination_returns_total(client, auth_headers, domain_seed):
+    """El endpoint de búsqueda paginada devuelve total y items correctamente."""
+    r = await client.post(
+        "/api/v1/core/activos/search",
+        json={"page": 1, "per_page": 1},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "total" in data, "La respuesta debe incluir el campo 'total'"
+    assert "items" in data, "La respuesta debe incluir el campo 'items'"
+    assert isinstance(data["total"], int)
+    assert len(data["items"]) <= 1
+    assert data["total"] >= len(data["items"])
+
+
+@pytest.mark.asyncio
+async def test_list_especificaciones_returns_typed_objects(session, domain_seed):
+    """CoreRepository.list_especificaciones retorna EspecificacionDetalle tipados."""
+    from app.repositories.core import CoreRepository
+    from app.schemas.core import EspecificacionDetalle
+
+    repo = CoreRepository(session)
+    result = await repo.list_especificaciones(_u(domain_seed["act_1"]))
+    # Puede estar vacío si no hay specs en el seed, pero no debe ser list[dict]
+    for item in result:
+        assert isinstance(item, EspecificacionDetalle), (
+            f"Se esperaba EspecificacionDetalle, se obtuvo {type(item)}"
+        )

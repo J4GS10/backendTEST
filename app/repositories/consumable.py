@@ -15,12 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.models.consumable import Consumible, MovimientoConsumible
+from app.repositories.base import BaseRepository
 from app.schemas.consumable import ConsumibleCreate, ConsumibleUpdate
 
 
-class ConsumibleRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+class ConsumibleRepository(BaseRepository["Consumible"]):
+    model = Consumible
+
+    def _pk_column(self): return Consumible.CON_Consumible
 
     async def create(self, schema: ConsumibleCreate) -> Consumible:
         obj = Consumible(**schema.model_dump())

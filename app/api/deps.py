@@ -1,7 +1,6 @@
 """Dependencias FastAPI compartidas: auth, RBAC, paginación."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Annotated, Literal
 from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -50,10 +49,7 @@ def _decode_token(token: str, expected_type: Literal["access", "refresh"] = "acc
     return payload
 
 
-async def get_current_user(
-    db: AsyncSession = Depends(get_db),
-    token: str = Depends(reusable_oauth2),
-) -> Usuario:
+async def _authenticate(db: AsyncSession, token: str, *, allow_restricted: bool) -> Usuario:
     """
     Resuelve y valida el usuario del token JWT. Aplica caché en Redis
     cuando está disponible: el resultado se cachea por TTL corto (default 30s)
@@ -65,6 +61,12 @@ async def get_current_user(
         que un cambio de password invalide inmediatamente todos los tokens).
     """
     payload = _decode_token(token, expected_type="access")
+    # Sesión restringida (contraseña temporal o MFA pendiente): solo se admite
+    # en los endpoints de autoservicio. Seguro por defecto: todo lo demás, 403.
+    from app.services.session_policy import restriction_error
+    pending = restriction_error(payload)
+    if pending and not allow_restricted:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=pending)
     username = payload["sub"]
     jti = payload.get("jti")
     iat = payload.get("iat")
@@ -109,11 +111,21 @@ async def get_current_user(
     # 3. Revocación global SIEMPRE se valida (no se cachea como "ok"), para que un
     #    cambio de password o offboarding tenga efecto inmediato.
     if iat:
-        issued_at = datetime.fromtimestamp(iat, tz=timezone.utc).replace(tzinfo=None)
+        from app.core.security import token_issued_at
+        issued_at = token_issued_at(payload)
         if await gov_repo.is_user_globally_revoked(user.USU_Usuario, issued_at):
             # Marcar revocado en caché para próximos hits del mismo jti.
             if cache_key:
                 await cache_set(cache_key, {"revoked": True}, settings.AUTH_CACHE_TTL_SECONDS)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="TOKEN_REVOKED"
+            )
+
+    # 4. Sesión cerrada individualmente (desde "Sesiones activas").
+    sid = payload.get("sid")
+    if sid:
+        from app.services.sessions import is_session_closed
+        if await is_session_closed(db, sid):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="TOKEN_REVOKED"
             )
@@ -126,7 +138,25 @@ async def get_current_user(
             settings.AUTH_CACHE_TTL_SECONDS,
         )
 
+    # 5. Alcance de datos (RLS por sede) para el resto de la petición.
+    from app.core.data_scope import scope_for_user, set_request_scope
+    set_request_scope(scope_for_user(user))
     return user
+
+
+async def get_current_user(
+    db: AsyncSession = Depends(get_db),
+    token: str = Depends(reusable_oauth2),
+) -> Usuario:
+    return await _authenticate(db, token, allow_restricted=False)
+
+
+async def get_current_user_allow_restricted(
+    db: AsyncSession = Depends(get_db),
+    token: str = Depends(reusable_oauth2),
+) -> Usuario:
+    """Solo para autoservicio: /me, /me/password y /me/2fa/*."""
+    return await _authenticate(db, token, allow_restricted=True)
 
 
 async def invalidate_auth_cache(*jtis: str) -> None:
@@ -137,6 +167,8 @@ async def invalidate_auth_cache(*jtis: str) -> None:
 
 
 CurrentUser = Annotated[Usuario, Depends(get_current_user)]
+# Admite sesiones con un paso de seguridad pendiente (cambio de contraseña/MFA).
+CurrentUserSelfService = Annotated[Usuario, Depends(get_current_user_allow_restricted)]
 
 
 class RoleChecker:
@@ -162,8 +194,16 @@ class RoleChecker:
 
 # Atajos comunes
 require_super_admin = RoleChecker(["SUPER_ADMIN"])
+# Gestión de identidades y accesos (usuarios, contraseñas, MFA, sesiones).
+require_iam = RoleChecker(["SUPER_ADMIN", "ADMIN_SEGURIDAD"])
+# Módulos de inventario/operación (todos los roles salvo ADMIN_SEGURIDAD).
+require_business = RoleChecker(["SUPER_ADMIN", "ADMIN_TI", "TECNICO", "AUDITOR", "CONSULTA"])
 require_admin = RoleChecker(["SUPER_ADMIN", "ADMIN_TI"])
 require_operativo = RoleChecker(["SUPER_ADMIN", "ADMIN_TI", "TECNICO"])
+# Lectura de la bitácora de auditoría (el AUDITOR la ve filtrada por su alcance).
+require_audit_reader = RoleChecker(["SUPER_ADMIN", "ADMIN_SEGURIDAD", "AUDITOR"])
+# Exportaciones CSV del inventario (lectura masiva de su alcance).
+require_export = RoleChecker(["SUPER_ADMIN", "ADMIN_TI", "AUDITOR"])
 # Cualquier autenticado: usar Depends(get_current_user) directamente.
 
 

@@ -1,11 +1,7 @@
-from typing import Any
 from sqlalchemy.orm import DeclarativeBase
 
 class Base(DeclarativeBase):
-    """
-    Clase Base pura.
-    """
-    id: Any
+    """Clase Base pura. Cada modelo define su propio PK."""
 
 #IMPORTANTE:
 # Importamos todos los modelos aquí para asegurar que SQLAlchemy

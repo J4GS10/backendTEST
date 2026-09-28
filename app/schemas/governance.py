@@ -30,6 +30,7 @@ class AuditoriaResponse(BaseModel):
     AUD_IP_Origen: Optional[str] = None
     AUD_User_Agent: Optional[str] = None
     USU_Usuario: Optional[uuid.UUID] = None
+    AUD_Sede: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 

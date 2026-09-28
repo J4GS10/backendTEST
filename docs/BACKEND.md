@@ -1,6 +1,6 @@
 # Backend (FastAPI)
 
-Raíz: `backend/inventarioTI-backend/`. Python 3.11. API async, versionada en `/api/v1`.
+Raíz: `codigo/inventarioTI-backend/`. Python 3.11. API async, versionada en `/api/v1`.
 
 ## Estructura
 
@@ -82,9 +82,9 @@ tests/                     # 24 archivos, 138 tests (pytest + pytest-asyncio)
 
 ## Migraciones (Alembic)
 
-23 migraciones en `app/alembic/versions/` (head: `c7d8e9f0a1b2`,
-`2026-06-05_config_color_fondo`). Se aplican solas en el arranque
-(`alembic upgrade head`).
+La cadena versionada vive en `app/alembic/versions/`; el head vigente se
+consulta con `alembic heads`. Compose las aplica mediante el servicio one-shot
+`migrator`. El proceso HTTP nunca ejecuta migraciones ni bootstrap.
 
 ```bash
 docker exec lombardi-backend-1 alembic current        # revisión actual
@@ -118,11 +118,15 @@ docker exec lombardi-backend-1 python scripts/check_rbac.py    # guard RBAC
 async def create_activo(schema: ActivoCreate, request: Request, current_user: CurrentUser, ...):
     return await service.create_activo(schema, usuario_id=current_user.USU_Usuario)
 
-# service (services/core.py): valida FKs/unicidad, audita, commit
+# service (services/core.py): valida FKs/unicidad y audita
+@transactional
 async def create_activo(self, schema, usuario_id=None):
     ...                                  # validaciones de negocio
     nuevo = await self.repo.create_activo(schema)
     await self.gov_repo.create_audit_log("CREATE", "INV_ACTIVO", {...}, usuario_id=usuario_id)
-    await self.db.commit()               # IntegrityError → 409 vía internal_error/commit_or_409
     return nuevo
 ```
+
+`@transactional` es el límite estándar de escritura. Los repositorios sólo
+hacen queries/`flush`; los commits explícitos quedan reservados para bootstrap,
+cache de idempotencia y flujos especiales documentados.

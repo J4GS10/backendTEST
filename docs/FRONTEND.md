@@ -1,6 +1,6 @@
 # Frontend (React + TypeScript)
 
-Raíz: `backend/inventarioTI-frontend/`. SPA con React 19, TypeScript 5.9 (strict),
+Raíz: `codigo/inventarioTI-frontend/`. SPA con React 19, TypeScript 5.9 (strict),
 Vite 7. Servida por Nginx; `/api/*` se proxya al backend.
 
 ## Stack

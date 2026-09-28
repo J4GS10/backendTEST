@@ -187,43 +187,14 @@ async def delete_nivel(id: int, request: Request, current_user: CurrentUser, ser
 
 # ================= AREA =================
 @router.get("/areas/all")
-async def list_all_areas_jerarquico(db = Depends(get_db)):
+async def list_all_areas_jerarquico(
+    service: LocationService = Depends(get_service),
+):
     """
     Lista TODAS las áreas con su ruta jerárquica completa
     (Sede > Edificio > Nivel > Área). Útil para selectores planos.
     """
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-    from app.models.location import Area, Edificio, Nivel, Sede
-
-    q = (
-        select(Area)
-        .options(
-            selectinload(Area.nivel).selectinload(Nivel.edificio).selectinload(Edificio.sede)
-        )
-        .order_by(Area.ARE_Nombre)
-    )
-    result = await db.execute(q)
-    rows = result.scalars().all()
-    out = []
-    for a in rows:
-        nivel = a.nivel
-        edificio = nivel.edificio if nivel else None
-        sede = edificio.sede if edificio else None
-        path_parts = [
-            sede.SED_Nombre if sede else None,
-            edificio.EDI_Nombre if edificio else None,
-            f"Piso {nivel.NIV_Numero_Piso}" if nivel else None,
-            a.ARE_Nombre,
-        ]
-        out.append({
-            "ARE_Area": a.ARE_Area,
-            "ARE_Nombre": a.ARE_Nombre,
-            "ARE_Tipo_Acceso": a.ARE_Tipo_Acceso,
-            "NIV_Nivel": a.NIV_Nivel,
-            "ruta": " › ".join(p for p in path_parts if p),
-        })
-    return out
+    return await service.list_all_areas_hierarchy()
 
 
 @router.post("/areas", response_model=AreaResponse, status_code=201, dependencies=WRITE)

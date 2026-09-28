@@ -5,11 +5,10 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import HTTPException
 from sqlalchemy import desc, func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.transactional import transactional
 from app.models.governance import AuditoriaSistema
 from app.repositories.governance import GovernanceRepository
 from app.schemas.governance import ConfigUpdate
@@ -26,6 +25,7 @@ class GovernanceService:
     async def get_public_config(self):
         return await self.repo.get_config()
 
+    @transactional
     async def update_config(
         self, schema: ConfigUpdate, usuario_id: uuid.UUID | None = None, ip: str | None = None
     ):
@@ -35,12 +35,12 @@ class GovernanceService:
             {"cambios": schema.model_dump(exclude_unset=True)},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        try:
-            await self.db.commit()
-        except IntegrityError as e:
-            await self.db.rollback()
-            raise HTTPException(409, "INTEGRITY_CONSTRAINT_VIOLATED") from e
         return config
+
+    @transactional
+    async def purge_security_records(self) -> dict:
+        """Remove expired security data within the service transaction boundary."""
+        return await self.repo.purge_expired_security_records()
 
     # =====================================================================
     # AUDIT LOG — consulta paginada + filtros

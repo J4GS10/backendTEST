@@ -9,17 +9,44 @@
 
 ## Roles
 
-| Rol | Incluido en | Capacidad |
-|---|---|---|
-| `SUPER_ADMIN` | `require_super_admin`, `require_admin`, `require_operativo` | Total. Único que ve auditoría, edita configuración global y purga seguridad. |
-| `ADMIN_TI` | `require_admin`, `require_operativo` | Gestión completa de inventario, catálogos, personas, usuarios, compras. |
-| `TECNICO` | `require_operativo` | Operación de campo: alta/edición de activos, asignaciones, mantenimientos, instalaciones. |
-| `CONSULTA` | — (solo `get_current_user`) | **Solo lectura.** No pasa ningún `require_*`; por tanto no puede ejecutar ninguna operación de escritura. |
+> Actualizado el 2026-09-25 (rol AUDITOR y alcance por sede). Fuente de verdad:
+> `app/core/roles.py` y `app/api/deps.py`.
+
+| Rol | Atajos que lo incluyen | Capacidad | Alcance de datos |
+|---|---|---|---|
+| `SUPER_ADMIN` | todos | Total: configuración, cualquier cuenta, alcance global | Siempre global |
+| `ADMIN_SEGURIDAD` | `require_iam`, `require_audit_reader` | Identidades y accesos, bitácora. **Sin inventario** | Siempre global |
+| `ADMIN_TI` | `require_admin`, `require_operativo`, `require_export` | Inventario completo, catálogos, personas, compras | Sus sedes o global |
+| `TECNICO` | `require_operativo` | Operación de campo: activos, asignaciones, mantenimientos | Sus sedes o global |
+| `AUDITOR` | `require_business`, `require_audit_reader`, `require_export` | **Solo lectura** del inventario, bitácora y exportaciones | Sus sedes o global |
+| `CONSULTA` | `require_business` | **Solo lectura** | Sus sedes o global |
 
 Atajos (`app/api/deps.py`):
-- `require_super_admin = RoleChecker(["SUPER_ADMIN"])`
-- `require_admin = RoleChecker(["SUPER_ADMIN", "ADMIN_TI"])`
-- `require_operativo = RoleChecker(["SUPER_ADMIN", "ADMIN_TI", "TECNICO"])`
+- `require_super_admin = ["SUPER_ADMIN"]`
+- `require_iam = ["SUPER_ADMIN", "ADMIN_SEGURIDAD"]`
+- `require_business = ["SUPER_ADMIN", "ADMIN_TI", "TECNICO", "AUDITOR", "CONSULTA"]` (routers de inventario)
+- `require_admin = ["SUPER_ADMIN", "ADMIN_TI"]`
+- `require_operativo = ["SUPER_ADMIN", "ADMIN_TI", "TECNICO"]`
+- `require_audit_reader = ["SUPER_ADMIN", "ADMIN_SEGURIDAD", "AUDITOR"]`
+- `require_export = ["SUPER_ADMIN", "ADMIN_TI", "AUDITOR"]`
+
+Reglas de gobierno (`app/core/roles.py`): nadie administra su propia cuenta;
+`ADMIN_SEGURIDAD` no gestiona ni otorga `SUPER_ADMIN`/`ADMIN_SEGURIDAD`; **solo un
+`SUPER_ADMIN` otorga el alcance global**; una cuenta de inventario debe tener al menos
+una sede o alcance global.
+
+## Alcance de datos por sede (RLS)
+
+El rol decide **qué operaciones** puede hacer una cuenta; el alcance decide **sobre
+qué filas**. Se aplica en dos capas (ver `app/core/data_scope.py` y `app/db/rls.py`):
+
+| Tabla | Visible si… | Escritura |
+|---|---|---|
+| `INV_ACTIVO`, `INV_ORDEN_COMPRA`, `INV_CONSUMIBLE` | su sede está en el alcance | solo en sedes del alcance |
+| `INV_PERSONA` | su sede está en el alcance, o está vinculada a un registro visible (custodia, mantenimiento, instalación, consumo), o es la propia | solo personas de sedes del alcance |
+| Movimientos, mantenimientos, especificaciones, instalaciones, adjuntos, evidencias, líneas de compra, movimientos de consumibles | su activo / orden / consumible es visible | ídem; una asignación nueva exige un área de una sede del alcance |
+| `INV_AUDITORIA_SISTEMA` | evento de una sede del alcance, o acción propia | solo inserción (nunca UPDATE/DELETE desde peticiones) |
+| Catálogos, geografía, departamentos, cargos, software y licencias | siempre (vocabulario compartido) | país/estado/municipio/sede solo con alcance global |
 
 ## Invariante verificado
 

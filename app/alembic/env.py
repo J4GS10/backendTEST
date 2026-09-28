@@ -17,9 +17,11 @@ from app.models.organization import Departamento, Cargo, Persona, Usuario
 from app.models.location import Pais, Estado, Municipio, Sede, Edificio, Nivel, Area
 from app.models.catalogs import TipoActivo, Marca, TipoConexion, Modelo, EstadoOperativo, TipoEspecificacion
 from app.models.core import Activo, Especificacion
-from app.models.software import TipoLicencia, Software, Licencia, Instalacion
+from app.models.software import TipoLicencia, Software, Licencia, LicenciaClave, Instalacion
+from app.models.consumable import Consumible, MovimientoConsumible
+from app.models.procurement import Proveedor, OrdenCompra, OrdenCompraLinea, OrdenCompraLineaActivo
 from app.models.traceability import TipoMovimiento, Movimiento, TipoMantenimiento, Mantenimiento, DetalleMantenimiento, TipoEvidencia, Evidencia
-from app.models.governance import AuditoriaSistema, ConfiguracionSistema
+from app.models.governance import AuditoriaSistema, ConfiguracionSistema, ReglaNotificacion, EmailOutbox, IntegracionCorreo
 
 config = context.config
 

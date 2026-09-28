@@ -3,7 +3,12 @@ from datetime import date, datetime
 from decimal import Decimal
 import uuid
 
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator, model_validator
+
+from app.schemas.software import LicenciaClaveCreate
+
+
+SUPPORTED_CURRENCIES = {"GTQ", "USD", "CHF"}
 
 
 # =======================
@@ -47,6 +52,7 @@ class LineaCreate(BaseModel):
     OCL_Precio_Unitario: Decimal = Field(0, ge=0)
     ACT_Activo: Optional[uuid.UUID] = None
     CON_Consumible: Optional[int] = None
+    LIC_Licencia: Optional[int] = None
 
 
 class LineaResponse(BaseModel):
@@ -57,6 +63,7 @@ class LineaResponse(BaseModel):
     OCL_Subtotal: Decimal
     ACT_Activo: Optional[uuid.UUID] = None
     CON_Consumible: Optional[int] = None
+    LIC_Licencia: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -66,10 +73,21 @@ class LineaResponse(BaseModel):
 class OrdenCreate(BaseModel):
     OCO_Numero: str = Field(..., min_length=1, max_length=50)
     OCO_Fecha: date
-    OCO_Moneda: str = Field("USD", min_length=3, max_length=3)
+    OCO_Moneda: str = Field("GTQ", min_length=3, max_length=3)
     OCO_Notas: Optional[str] = Field(None, max_length=500)
     PRV_Proveedor: int
+    # Sede que recibe la compra (alcance de datos). Los activos recibidos
+    # nacen en esta sede.
+    SED_Sede: Optional[int] = None
     lineas: List[LineaCreate] = Field(default_factory=list)
+
+    @field_validator("OCO_Moneda")
+    @classmethod
+    def _moneda_soportada(cls, value: str) -> str:
+        code = (value or "").upper()
+        if code not in SUPPORTED_CURRENCIES:
+            raise ValueError("UNSUPPORTED_CURRENCY")
+        return code
 
 
 class OrdenEstadoUpdate(BaseModel):
@@ -99,9 +117,31 @@ class RecepcionActivo(BaseModel):
     ACT_Costo: Optional[Decimal] = Field(None, ge=0)
 
 
+class RecepcionLicencia(BaseModel):
+    """Una linea que registra software/licencias, con claves individuales opcionales."""
+    OCL_Linea: int
+    SOF_Software: int
+    TLI_Tipo_Licencia: int
+    cantidad: Optional[int] = Field(None, gt=0)
+    LIC_Fecha_Vencimiento: Optional[date] = None
+    LIC_Clave_Activacion: Optional[str] = Field(None, max_length=255)
+    claves: List[LicenciaClaveCreate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _cantidad_vs_claves(self):
+        if self.claves:
+            if self.cantidad is not None and self.cantidad != len(self.claves):
+                raise ValueError("LICENSE_KEY_COUNT_MISMATCH")
+            self.cantidad = len(self.claves)
+        if not self.cantidad:
+            raise ValueError("LICENSE_QUANTITY_REQUIRED")
+        return self
+
+
 class RecepcionOrden(BaseModel):
     consumibles: List[RecepcionConsumible] = Field(default_factory=list)
     activos: List[RecepcionActivo] = Field(default_factory=list)
+    licencias: List[RecepcionLicencia] = Field(default_factory=list)
 
 
 class RecepcionResultado(BaseModel):
@@ -109,6 +149,8 @@ class RecepcionResultado(BaseModel):
     OCO_Estado: str
     consumibles_reabastecidos: int
     activos_creados: int
+    licencias_creadas: int = 0
+    licencias_claves_creadas: int = 0
     activos_codigos: List[str] = Field(default_factory=list)
 
 
@@ -127,6 +169,7 @@ class OrdenResponse(BaseModel):
     OCO_Total: Decimal
     OCO_Notas: Optional[str] = None
     PRV_Proveedor: int
+    SED_Sede: Optional[int] = None
     proveedor: Optional[_ProveedorSummary] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)

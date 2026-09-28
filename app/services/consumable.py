@@ -6,10 +6,11 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import internal_error
+from app.core.transactional import schedule_post_commit, transactional
 from app.models.consumable import MovimientoConsumible
 from app.repositories.consumable import ConsumibleRepository
 from app.repositories.governance import GovernanceRepository
+from app.services.base import BaseService
 from app.schemas.consumable import (
     ConsumibleCreate, ConsumibleUpdate, StockMovimientoCreate,
 )
@@ -26,14 +27,16 @@ def _con_to_response(con) -> dict:
         "CON_Stock_Actual": con.CON_Stock_Actual,
         "CON_Stock_Minimo": con.CON_Stock_Minimo,
         "CON_Activo": con.CON_Activo,
+        "SED_Sede": con.SED_Sede,
         "bajo_stock": con.CON_Stock_Minimo > 0 and con.CON_Stock_Actual <= con.CON_Stock_Minimo,
     }
 
 
-class ConsumableService:
+class ConsumableService(BaseService[ConsumibleRepository]):
+    repo_class = ConsumibleRepository
+
     def __init__(self, db: AsyncSession):
-        self.db = db
-        self.repo = ConsumibleRepository(db)
+        super().__init__(db)
         self.gov_repo = GovernanceRepository(db)
 
     async def list(self, solo_bajo_stock: bool = False):
@@ -41,69 +44,56 @@ class ConsumableService:
         return [_con_to_response(c) for c in items]
 
     async def get(self, id: int):
-        obj = await self.repo.get_by_id(id)
-        if not obj:
-            raise HTTPException(404, "CONSUMABLE_NOT_FOUND")
+        obj = await self.get_or_404(id, "CONSUMABLE_NOT_FOUND")
         return _con_to_response(obj)
 
+    @transactional
     async def create(self, schema: ConsumibleCreate, usuario_id=None, ip=None):
-        try:
-            if await self.repo.get_by_name(schema.CON_Nombre):
-                raise HTTPException(409, "CONSUMABLE_ALREADY_EXISTS")
-            obj = await self.repo.create(schema)
-            await self.gov_repo.create_audit_log(
-                "CREATE", "INV_CONSUMIBLE",
-                {"nombre": schema.CON_Nombre, "stock_inicial": schema.CON_Stock_Actual},
-                usuario_id=usuario_id, ip_origen=ip,
-            )
-            await self.db.commit()
-            await self.db.refresh(obj)
-            return _con_to_response(obj)
-        except HTTPException:
-            await self.db.rollback(); raise
-        except Exception as e:
-            await self.db.rollback()
-            raise internal_error(e, "TRANSACTION_FAILED")
+        from app.core.data_scope import elevated, require_sede
+        schema.SED_Sede = require_sede(schema.SED_Sede, required=False)
+        # El nombre es único en toda la empresa, no solo en el alcance.
+        async with elevated(self.db):
+            existe = await self.repo.get_by_name(schema.CON_Nombre)
+        if existe:
+            raise HTTPException(409, "CONSUMABLE_ALREADY_EXISTS")
+        obj = await self.repo.create(schema)
+        await self.gov_repo.create_audit_log(
+            "CREATE", "INV_CONSUMIBLE",
+            {"nombre": schema.CON_Nombre, "stock_inicial": schema.CON_Stock_Actual,
+             "sede": schema.SED_Sede},
+            usuario_id=usuario_id, ip_origen=ip, sede_id=schema.SED_Sede,
+        )
+        await self.db.refresh(obj)
+        return _con_to_response(obj)
 
+    @transactional
     async def update(self, id: int, schema: ConsumibleUpdate, usuario_id=None, ip=None):
-        try:
-            obj = await self.repo.get_by_id(id)
-            if not obj:
-                raise HTTPException(404, "CONSUMABLE_NOT_FOUND")
-            updated = await self.repo.update(id, schema)
-            await self.gov_repo.create_audit_log(
-                "UPDATE", "INV_CONSUMIBLE",
-                {"id": id, "cambios": schema.model_dump(exclude_unset=True)},
-                usuario_id=usuario_id, ip_origen=ip,
-            )
-            await self.db.commit()
-            return _con_to_response(updated)
-        except HTTPException:
-            await self.db.rollback(); raise
-        except Exception as e:
-            await self.db.rollback()
-            raise internal_error(e, "TRANSACTION_FAILED")
+        obj = await self.get_or_404(id, "CONSUMABLE_NOT_FOUND")
+        sede_final = obj.SED_Sede
+        if "SED_Sede" in schema.model_fields_set and schema.SED_Sede != obj.SED_Sede:
+            from app.core.data_scope import require_sede
+            schema.SED_Sede = require_sede(schema.SED_Sede, required=False)
+            sede_final = schema.SED_Sede
+        updated = await self.repo.update(id, schema)
+        await self.gov_repo.create_audit_log(
+            "UPDATE", "INV_CONSUMIBLE",
+            {"id": id, "cambios": schema.model_dump(exclude_unset=True)},
+            usuario_id=usuario_id, ip_origen=ip, sede_id=sede_final,
+        )
+        return _con_to_response(updated)
 
+    @transactional
     async def delete(self, id: int, usuario_id=None, ip=None):
-        try:
-            obj = await self.repo.get_by_id(id)
-            if not obj:
-                raise HTTPException(404, "CONSUMABLE_NOT_FOUND")
-            # Si tiene historial de movimientos, no se borra (preserva trazabilidad).
-            if await self.repo.count_movimientos(id) > 0:
-                raise HTTPException(409, "CANNOT_DELETE_CONSUMABLE_HAS_MOVEMENTS")
-            await self.repo.delete(id)
-            await self.gov_repo.create_audit_log(
-                "DELETE", "INV_CONSUMIBLE",
-                {"id": id, "nombre": obj.CON_Nombre},
-                usuario_id=usuario_id, ip_origen=ip,
-            )
-            await self.db.commit()
-        except HTTPException:
-            await self.db.rollback(); raise
-        except Exception as e:
-            await self.db.rollback()
-            raise internal_error(e, "TRANSACTION_FAILED")
+        obj = await self.get_or_404(id, "CONSUMABLE_NOT_FOUND")
+        # Si tiene historial de movimientos, no se borra (preserva trazabilidad).
+        if await self.repo.count_movimientos(id) > 0:
+            raise HTTPException(409, "CANNOT_DELETE_CONSUMABLE_HAS_MOVEMENTS")
+        await self.repo.delete(id)
+        await self.gov_repo.create_audit_log(
+            "DELETE", "INV_CONSUMIBLE",
+            {"id": id, "nombre": obj.CON_Nombre},
+            usuario_id=usuario_id, ip_origen=ip, sede_id=obj.SED_Sede,
+        )
 
     # ------------------------------------------------------------------
     # Stock
@@ -120,64 +110,64 @@ class ConsumableService:
     ):
         return await self._mover_stock(id, schema, "SALIDA", usuario_id, ip)
 
+    @transactional
     async def _mover_stock(self, id: int, schema, tipo: str, usuario_id, ip):
-        try:
-            obj = await self.repo.get_by_id(id)
-            if not obj:
-                raise HTTPException(404, "CONSUMABLE_NOT_FOUND")
+        obj = await self.get_or_404(id, "CONSUMABLE_NOT_FOUND")
+        sede = obj.SED_Sede
+        if schema.PER_Persona is not None:
+            from app.models.organization import Persona as _Persona
+            if not await self.db.get(_Persona, schema.PER_Persona):
+                raise HTTPException(404, "PERSON_NOT_FOUND")
 
-            # Capturar metadatos ANTES del UPDATE (que sincroniza el objeto en sesión).
-            stock_antes = obj.CON_Stock_Actual
-            nombre, minimo, unidad, categoria = (
-                obj.CON_Nombre, obj.CON_Stock_Minimo, obj.CON_Unidad, obj.CON_Categoria,
-            )
+        # Capturar metadatos ANTES del UPDATE (que sincroniza el objeto en sesión).
+        stock_antes = obj.CON_Stock_Actual
+        nombre, minimo, unidad, categoria = (
+            obj.CON_Nombre, obj.CON_Stock_Minimo, obj.CON_Unidad, obj.CON_Categoria,
+        )
 
-            if tipo == "ENTRADA":
-                ok = await self.repo.incrementar_stock(id, schema.MOC_Cantidad)
-            else:  # SALIDA — atómico, falla si no hay stock suficiente
-                ok = await self.repo.decrementar_stock(id, schema.MOC_Cantidad)
-                if not ok:
-                    raise HTTPException(409, "INSUFFICIENT_STOCK")
+        if tipo == "ENTRADA":
+            ok = await self.repo.incrementar_stock(id, schema.MOC_Cantidad)
+        else:  # SALIDA — atómico, falla si no hay stock suficiente
+            ok = await self.repo.decrementar_stock(id, schema.MOC_Cantidad)
             if not ok:
-                raise HTTPException(409, "STOCK_OPERATION_FAILED")
+                raise HTTPException(409, "INSUFFICIENT_STOCK")
+        if not ok:
+            raise HTTPException(409, "STOCK_OPERATION_FAILED")
 
-            # Releer el stock resultante para el snapshot del movimiento.
-            refreshed = await self.repo.get_by_id(id)
-            stock_despues = refreshed.CON_Stock_Actual
-            mov = MovimientoConsumible(
-                CON_Consumible=id,
-                MOC_Tipo=tipo,
-                MOC_Cantidad=schema.MOC_Cantidad,
-                MOC_Stock_Resultante=stock_despues,
-                MOC_Motivo=schema.MOC_Motivo,
-                PER_Persona=schema.PER_Persona,
-                USU_Usuario=usuario_id,
-            )
-            await self.repo.add_movimiento(mov)
+        # Releer el stock resultante para el snapshot del movimiento.
+        refreshed = await self.repo.get_by_id(id)
+        stock_despues = refreshed.CON_Stock_Actual
+        mov = MovimientoConsumible(
+            CON_Consumible=id,
+            MOC_Tipo=tipo,
+            MOC_Cantidad=schema.MOC_Cantidad,
+            MOC_Stock_Resultante=stock_despues,
+            MOC_Motivo=schema.MOC_Motivo,
+            PER_Persona=schema.PER_Persona,
+            USU_Usuario=usuario_id,
+        )
+        await self.repo.add_movimiento(mov)
 
-            await self.gov_repo.create_audit_log(
-                "STOCK_IN" if tipo == "ENTRADA" else "STOCK_OUT", "INV_CONSUMIBLE",
-                {
-                    "id": id, "nombre": nombre, "cantidad": schema.MOC_Cantidad,
-                    "stock_resultante": stock_despues, "motivo": schema.MOC_Motivo,
-                },
-                usuario_id=usuario_id, ip_origen=ip,
-            )
-            await self.db.commit()
-            await self.db.refresh(mov)
+        await self.gov_repo.create_audit_log(
+            "STOCK_IN" if tipo == "ENTRADA" else "STOCK_OUT", "INV_CONSUMIBLE",
+            {
+                "id": id, "nombre": nombre, "cantidad": schema.MOC_Cantidad,
+                "stock_resultante": stock_despues, "motivo": schema.MOC_Motivo,
+            },
+            usuario_id=usuario_id, ip_origen=ip, sede_id=sede,
+        )
+        await self.db.refresh(mov)
 
-            # Alerta de stock bajo: solo al CRUZAR el umbral (evita spam si ya estaba bajo).
-            cruzo = minimo > 0 and stock_antes > minimo and stock_despues <= minimo
-            if cruzo:
-                await self._notificar_stock_bajo(
+        # Alerta de stock bajo: solo al CRUZAR el umbral (evita spam si ya estaba bajo).
+        cruzo = minimo > 0 and stock_antes > minimo and stock_despues <= minimo
+        if cruzo:
+            schedule_post_commit(
+                self,
+                lambda: self._notificar_stock_bajo(
                     nombre, stock_despues, minimo, unidad, categoria, usuario_id,
-                )
-            return mov
-        except HTTPException:
-            await self.db.rollback(); raise
-        except Exception as e:
-            await self.db.rollback()
-            raise internal_error(e, "TRANSACTION_FAILED")
+                ),
+            )
+        return mov
 
     async def _notificar_stock_bajo(self, nombre, stock_actual, minimo, unidad, categoria, usuario_id):
         """Email post-commit fire-and-forget a admins. No bloquea ni revierte."""
@@ -210,7 +200,5 @@ class ConsumableService:
             pass
 
     async def list_movimientos(self, id: int):
-        obj = await self.repo.get_by_id(id)
-        if not obj:
-            raise HTTPException(404, "CONSUMABLE_NOT_FOUND")
+        await self.get_or_404(id, "CONSUMABLE_NOT_FOUND")
         return await self.repo.get_movimientos(id)

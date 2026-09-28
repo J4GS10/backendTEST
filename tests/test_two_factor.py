@@ -6,6 +6,13 @@ FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 SA_LOGIN = {"username": "sa", "password": "TestPassw0rd!"}
 
 
+@pytest.fixture(autouse=True)
+def _mfa_policy(monkeypatch):
+    """Este módulo prueba el MFA obligatorio por rol (desactivado por defecto en tests)."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "TWO_FACTOR_REQUIRED_ROLES", "SUPER_ADMIN,ADMIN_SEGURIDAD,ADMIN_TI")
+
+
 @pytest.fixture
 def capture_emails(monkeypatch):
     sent = []
@@ -46,9 +53,19 @@ async def test_totp_enrolamiento_y_login(client, auth_headers, sa_user):
                             json={"challenge_token": challenge, "code": "000000"})
     assert bad.status_code == 400
 
+    # Anti-replay: el código ya usado en la activación no vale otra vez.
+    replay = await client.post("/api/v1/login/2fa/verify",
+                               json={"challenge_token": challenge, "code": pyotp.TOTP(secret).now()})
+    assert replay.status_code == 400
+    import time
     ok = await client.post("/api/v1/login/2fa/verify",
-                           json={"challenge_token": challenge, "code": pyotp.TOTP(secret).now()})
+                           json={"challenge_token": challenge, "code": pyotp.TOTP(secret).at(time.time() + 30)})
     assert ok.status_code == 200 and "access_token" in ok.json()
+    # Y ese código tampoco se puede reutilizar para un segundo login.
+    again = await client.post("/api/v1/login/2fa/verify", json={
+        "challenge_token": (await _login_step1(client))["challenge_token"],
+        "code": pyotp.TOTP(secret).at(time.time() + 30)})
+    assert again.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -115,20 +132,60 @@ async def test_disable_exitoso_rol_no_obligatorio(client, auth_headers, sa_user,
     assert st.json()["habilitado"] is False
 
 
-@pytest.mark.asyncio
-async def test_admin_reset_2fa_de_usuario(client, auth_headers, sa_user):
-    """Un SUPER_ADMIN puede resetear el 2FA de un usuario (aquí, de sí mismo)."""
+async def _sa_con_mfa(client, auth_headers):
+    """sa enrola TOTP y vuelve a entrar con 2 factores: sesión completa."""
+    import time
     secret = (await client.post("/api/v1/me/2fa/totp/setup", headers=auth_headers)).json()["secret"]
-    await client.post("/api/v1/me/2fa/totp/activate", headers=auth_headers,
-                      json={"code": pyotp.TOTP(secret).now()})
-    assert (await client.get("/api/v1/me/2fa", headers=auth_headers)).json()["habilitado"] is True
+    totp = pyotp.TOTP(secret)
+    await client.post("/api/v1/me/2fa/totp/activate", headers=auth_headers, json={"code": totp.now()})
+    challenge = (await _login_step1(client))["challenge_token"]
+    # Código de la ventana siguiente: el de la activación ya no es reutilizable.
+    code = totp.at(time.time() + 30)
+    ok = await client.post("/api/v1/login/2fa/verify", json={"challenge_token": challenge, "code": code})
+    assert ok.status_code == 200, ok.text
+    return {"Authorization": f"Bearer {ok.json()['access_token']}"}
 
-    r = await client.post(
-        f"/api/v1/org/usuarios/{sa_user.USU_Usuario}/2fa/reset", headers=auth_headers,
-    )
+
+async def _tecnico_con_mfa(session):
+    """Crea un TECNICO con MFA TOTP activo y devuelve su usuario."""
+    from app.core.security import encrypt_field, generate_totp_secret, get_password_hash
+    from app.models.organization import Cargo, Departamento, Persona, Usuario
+    dep = Departamento(DEP_Nombre="Soporte MFA")
+    car = Cargo(CAR_Nombre="Tecnico MFA")
+    session.add_all([dep, car])
+    await session.flush()
+    per = Persona(PER_Primer_Nombre="Mfa", PER_Primer_Apellido="User",
+                  PER_Email_Corporativo="mfa.user@test.local",
+                  DEP_Departamento=dep.DEP_Departamento, CAR_Cargo=car.CAR_Cargo)
+    session.add(per)
+    await session.flush()
+    usu = Usuario(USU_Username="mfa_user", USU_Password_Hash=get_password_hash("TestPassw0rd!"),
+                  USU_Rol="TECNICO", PER_Persona=per.PER_Persona,
+                  USU_2FA_Habilitado=True, USU_2FA_Metodo="TOTP",
+                  USU_2FA_Secret=encrypt_field(generate_totp_secret()))
+    session.add(usu)
+    await session.commit()
+    return usu
+
+
+@pytest.mark.asyncio
+async def test_admin_reset_2fa_de_usuario(client, auth_headers, sa_user, session):
+    """Un administrador resetea el MFA de OTRO usuario (teléfono perdido)."""
+    admin = await _sa_con_mfa(client, auth_headers)
+    usu = await _tecnico_con_mfa(session)
+    r = await client.post(f"/api/v1/org/usuarios/{usu.USU_Usuario}/2fa/reset", headers=admin)
     assert r.status_code == 200, r.text
-    st = (await client.get("/api/v1/me/2fa", headers=auth_headers)).json()
-    assert st["habilitado"] is False and st["metodo"] is None
+    await session.refresh(usu)
+    assert usu.USU_2FA_Habilitado is False and usu.USU_2FA_Metodo is None and usu.USU_2FA_Secret is None
+
+
+@pytest.mark.asyncio
+async def test_admin_no_puede_resetear_su_propio_mfa(client, auth_headers, sa_user):
+    """Resetear el MFA propio por la vía administrativa permitiría saltárselo."""
+    admin = await _sa_con_mfa(client, auth_headers)
+    r = await client.post(f"/api/v1/org/usuarios/{sa_user.USU_Usuario}/2fa/reset", headers=admin)
+    assert r.status_code == 403
+    assert r.json()["detail"] == "CANNOT_MODIFY_OWN_ACCOUNT"
 
 
 @pytest.mark.asyncio

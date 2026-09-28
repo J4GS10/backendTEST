@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.models.core import Activo
 from app.models.governance import AuditoriaSistema, TokenRevocado
 from app.models.organization import Persona, Usuario
+from app.models.software import Instalacion, Licencia
 from app.models.traceability import Movimiento
 
 
@@ -70,6 +71,65 @@ async def test_offboarding_libera_todos_los_activos(
         )
     )).scalars().all()
     assert len(abiertos) == 0
+
+
+@pytest.mark.asyncio
+async def test_offboarding_libera_licencias_de_activos_y_persona(
+    client, auth_headers, software_seed, session,
+):
+    """El offboarding libera licencias instaladas en sus activos y en la persona."""
+    s = software_seed
+    await client.post(
+        "/api/v1/trazabilidad/movimientos",
+        json={
+            "ACT_Activo": s["act_1"], "PER_Persona": s["alice"],
+            "ARE_Area": s["area"], "TMO_Tipo_Movimiento": s["tmo_asg"],
+        },
+        headers=auth_headers,
+    )
+    for payload in (
+        {
+            "ACT_Activo": s["act_1"],
+            "LIC_Licencia": s["lic"],
+            "INS_Fecha_Instalacion": "2026-05-28",
+        },
+        {
+            "PER_Persona": s["alice"],
+            "LIC_Licencia": s["lic"],
+            "INS_Fecha_Instalacion": "2026-05-28",
+        },
+    ):
+        r = await client.post("/api/v1/soft/instalaciones", json=payload, headers=auth_headers)
+        assert r.status_code == 201, r.text
+
+    session.expire_all()
+    lic = (await session.execute(
+        select(Licencia).where(Licencia.LIC_Licencia == s["lic"])
+    )).scalar_one()
+    assert lic.LIC_Cantidad_Usada == 2
+
+    r = await client.post(
+        f"/api/v1/trazabilidad/persona/{s['alice']}/offboarding",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["movimientos_cerrados"] == 1
+    assert body["licencias_liberadas"] == 2
+
+    session.expire_all()
+    lic = (await session.execute(
+        select(Licencia).where(Licencia.LIC_Licencia == s["lic"])
+    )).scalar_one()
+    assert lic.LIC_Cantidad_Usada == 0
+
+    activas = (await session.execute(
+        select(Instalacion).where(
+            Instalacion.LIC_Licencia == s["lic"],
+            Instalacion.INS_Estado.is_(True),
+        )
+    )).scalars().all()
+    assert activas == []
 
 
 @pytest.mark.asyncio

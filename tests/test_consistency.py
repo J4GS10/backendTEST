@@ -40,17 +40,23 @@ async def _movimientos_abiertos_global(session) -> int:
 async def test_inv_un_solo_movimiento_abierto_por_activo(
     client, auth_headers, domain_seed, session,
 ):
-    """Re-asignar el mismo activo no debe dejar 2 movimientos abiertos."""
+    """Re-asignar directo debe fallar y no debe dejar 2 movimientos abiertos."""
     d = domain_seed
-    for receptor in (d["alice"], d["bob"], d["alice"]):  # 3 asignaciones seguidas
-        await client.post(
+    payload = {
+        "ACT_Activo": d["act_1"],
+        "PER_Persona": d["alice"],
+        "ARE_Area": d["area"],
+        "TMO_Tipo_Movimiento": d["tmo_asg"],
+    }
+    r1 = await client.post("/api/v1/trazabilidad/movimientos", json=payload, headers=auth_headers)
+    assert r1.status_code == 201, r1.text
+    for receptor in (d["bob"], d["alice"]):
+        r = await client.post(
             "/api/v1/trazabilidad/movimientos",
-            json={
-                "ACT_Activo": d["act_1"], "PER_Persona": receptor,
-                "ARE_Area": d["area"], "TMO_Tipo_Movimiento": d["tmo_asg"],
-            },
+            json={**payload, "PER_Persona": receptor},
             headers=auth_headers,
         )
+        assert r.status_code == 409
     await _commit_and_sync(session)
     abiertos = (await session.execute(
         select(func.count()).select_from(Movimiento)

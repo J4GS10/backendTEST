@@ -135,7 +135,7 @@ async def test_cambio_password_por_admin_avisa_al_dueno(client, auth_headers, do
     session.add(p); await session.commit()
     cr = await client.post("/api/v1/org/usuarios", headers=auth_headers, json={
         "USU_Username": "avi_user", "USU_Password": "Inicial#2026",
-        "USU_Rol": "TECNICO", "PER_Persona": str(p.PER_Persona)})
+        "USU_Rol": "TECNICO", "USU_Alcance_Global": True, "PER_Persona": str(p.PER_Persona)})
     uid = cr.json()["USU_Usuario"]
     capture_emails.clear()
     r = await client.patch(f"/api/v1/org/usuarios/{uid}", headers=auth_headers,
@@ -175,16 +175,17 @@ async def test_no_se_puede_desactivar_el_ultimo_super_admin(client, auth_headers
     sa = (await session.execute(select(Usuario).where(Usuario.USU_Username == "sa"))).scalar_one()
     sid = str(sa.USU_Usuario)
 
-    # Desactivar (DELETE lógico) al único super admin -> 400.
+    # Un administrador no puede desactivar ni degradar su propia cuenta (el
+    # único super admin siempre es "él mismo"; la regla del último super admin
+    # queda como defensa en profundidad en el servicio).
     d = await client.delete(f"/api/v1/org/usuarios/{sid}", headers=auth_headers)
-    assert d.status_code == 400
-    assert d.json()["detail"] == "CANNOT_DISABLE_LAST_SUPER_ADMIN"
+    assert d.status_code == 403
+    assert d.json()["detail"] == "CANNOT_MODIFY_OWN_ACCOUNT"
 
-    # Degradar de rol al único super admin -> 400.
     p = await client.patch(f"/api/v1/org/usuarios/{sid}", headers=auth_headers,
                            json={"USU_Rol": "TECNICO"})
-    assert p.status_code == 400
-    assert p.json()["detail"] == "CANNOT_DISABLE_LAST_SUPER_ADMIN"
+    assert p.status_code == 403
+    assert p.json()["detail"] == "CANNOT_MODIFY_OWN_ACCOUNT"
 
     # Sigue activo y SUPER_ADMIN.
     await session.refresh(sa)

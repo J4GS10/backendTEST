@@ -2,6 +2,7 @@
 from io import BytesIO
 
 from docx import Document
+import pytest
 
 from app.services.documents import DocumentService, _ACTA_TEXTS
 
@@ -52,7 +53,7 @@ def test_formato_corporativo_docx():
     assert "DEVOLUCIÓN A LOMBARDI" in texto       # título
     assert "DISPOSITIVO" in texto and "SERIE" in texto  # cabecera de tabla
     assert "DESKTOP-KJEXT4" in texto               # columna dispositivo (hostname)
-    assert "Entrega equipo" in texto and "Recibe" in texto  # firmas
+    assert "Entrega el equipo" in texto and "Recibe" in texto  # firmas
     assert "Descripción:" in texto
     assert "control interno" in texto              # pie legal
 
@@ -88,3 +89,60 @@ def test_hex_to_rgb():
     assert DocumentService._hex_to_rgb("#1f3a5f") == (31, 58, 95)
     assert DocumentService._hex_to_rgb("#abc") == (170, 187, 204)
     assert DocumentService._hex_to_rgb("invalido") == (31, 58, 95)
+
+
+@pytest.mark.asyncio
+async def test_logo_fetch_bloquea_destinos_privados_sin_abrir_http(monkeypatch):
+    class ExplodingClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("no debe abrir HTTP para destinos privados")
+
+    monkeypatch.setattr("app.services.documents.httpx.AsyncClient", ExplodingClient)
+
+    assert await _svc()._fetch_logo("http://127.0.0.1/logo.png") is None
+    assert await _svc()._fetch_logo("http://169.254.169.254/latest/meta-data") is None
+    assert await _svc()._fetch_logo("http://localhost/logo.png") is None
+
+
+@pytest.mark.asyncio
+async def test_logo_fetch_bloquea_redirect_a_destino_privado(monkeypatch):
+    checked_urls = []
+    stream_calls = []
+
+    async def fake_safe_logo_url(url):
+        checked_urls.append(url)
+        return "127.0.0.1" not in url
+
+    class RedirectResponse:
+        status_code = 302
+        headers = {"location": "http://127.0.0.1/logo.png"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+        def stream(self, method, url, headers=None):  # noqa: ANN001
+            stream_calls.append((method, url, headers))
+            return RedirectResponse()
+
+    monkeypatch.setattr(DocumentService, "_is_safe_logo_url", staticmethod(fake_safe_logo_url))
+    monkeypatch.setattr("app.services.documents.httpx.AsyncClient", FakeClient)
+
+    assert await _svc()._fetch_logo("https://cdn.example/logo.png") is None
+    assert checked_urls == [
+        "https://cdn.example/logo.png",
+        "http://127.0.0.1/logo.png",
+    ]
+    assert len(stream_calls) == 1

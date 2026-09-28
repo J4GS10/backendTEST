@@ -35,6 +35,14 @@ class Consumible(Base):
 
     CON_Activo = Column(Boolean, nullable=False, default=True)
 
+    # Bodega (sede) donde se almacena el consumible. Base del RLS por sede.
+    SED_Sede = Column(
+        Integer,
+        ForeignKey("INV_SEDE.SED_Sede", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, onupdate=func.now())
 

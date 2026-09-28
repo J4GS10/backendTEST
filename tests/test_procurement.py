@@ -55,6 +55,24 @@ async def test_crear_orden_calcula_total(client, auth_headers, sa_user):
 
 
 @pytest.mark.asyncio
+async def test_moneda_default_gtq_y_permite_chf(client, auth_headers, sa_user):
+    pid = (await _crear_proveedor(client, auth_headers)).json()["PRV_Proveedor"]
+    default_order = await client.post("/api/v1/compras/ordenes", headers=auth_headers, json={
+        "OCO_Numero": "OC-GTQ", "OCO_Fecha": "2026-06-01", "PRV_Proveedor": pid,
+        "lineas": [],
+    })
+    assert default_order.status_code == 201, default_order.text
+    assert default_order.json()["OCO_Moneda"] == "GTQ"
+
+    chf_order = await client.post("/api/v1/compras/ordenes", headers=auth_headers, json={
+        "OCO_Numero": "OC-CHF", "OCO_Fecha": "2026-06-01", "PRV_Proveedor": pid,
+        "OCO_Moneda": "CHF", "lineas": [],
+    })
+    assert chf_order.status_code == 201, chf_order.text
+    assert chf_order.json()["OCO_Moneda"] == "CHF"
+
+
+@pytest.mark.asyncio
 async def test_numero_orden_duplicado_409(client, auth_headers, sa_user):
     pid = (await _crear_proveedor(client, auth_headers)).json()["PRV_Proveedor"]
     payload = {"OCO_Numero": "OC-DUP", "OCO_Fecha": "2026-06-01", "PRV_Proveedor": pid, "lineas": []}

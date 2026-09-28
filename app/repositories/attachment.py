@@ -9,11 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.models.attachment import Adjunto
+from app.repositories.base import BaseRepository
 
 
-class AttachmentRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+class AttachmentRepository(BaseRepository["Adjunto"]):
+    model = Adjunto
+
+    def _pk_column(self):
+        return Adjunto.ADJ_Adjunto
 
     async def create(self, adjunto: Adjunto) -> Adjunto:
         self.db.add(adjunto)

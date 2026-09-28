@@ -43,3 +43,28 @@ def internal_error(exc: Exception, code: str = "INTERNAL_ERROR") -> HTTPExceptio
         return HTTPException(status_code=409, detail="INTEGRITY_CONSTRAINT_VIOLATED")
     log.error("service.internal_error", code=code, error=str(exc), exc_type=type(exc).__name__)
     return HTTPException(status_code=500, detail=code)
+
+
+# ── Excepciones de Dominio ────────────────────────────────────────────────────
+# No dependen de FastAPI ni de ninguna capa de infraestructura.
+# La traducción a HTTPException se hace en la capa de servicio/endpoint.
+
+class DomainError(Exception):
+    """Base para todas las excepciones de dominio. Sin dependencias de framework."""
+
+    def __init__(self, code: str, message: str = ""):
+        self.code = code
+        self.message = message
+        super().__init__(code)
+
+
+class InvalidStateTransitionError(DomainError):
+    """Transición de estado no permitida en la máquina de estados del activo."""
+
+    def __init__(self, current: str, target: str):
+        self.current_state = current
+        self.target_state = target
+        super().__init__(
+            code="INVALID_STATE_TRANSITION",
+            message=f"No se puede pasar de '{current}' a '{target}' directamente.",
+        )

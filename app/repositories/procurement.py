@@ -8,13 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from app.models.procurement import OrdenCompra, OrdenCompraLinea, Proveedor
+from app.models.procurement import OrdenCompra, OrdenCompraLinea, OrdenCompraLineaActivo, Proveedor
+from app.core.config import settings
+from app.db.dialects import dialect_for
 from app.schemas.procurement import ProveedorCreate, ProveedorUpdate
+from app.repositories.base import BaseRepository
 
 
-class ProcurementRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+class ProcurementRepository(BaseRepository):
 
     # ---------------- PROVEEDOR ----------------
     async def create_proveedor(self, schema: ProveedorCreate) -> Proveedor:
@@ -78,12 +79,19 @@ class ProcurementRepository:
         await self.db.flush()
         return orden
 
-    async def get_orden(self, id: int, with_lineas: bool = True) -> Optional[OrdenCompra]:
+    async def get_orden(
+        self, id: int, with_lineas: bool = True, *, lock: bool = False
+    ) -> Optional[OrdenCompra]:
         query = select(OrdenCompra).where(OrdenCompra.OCO_Orden == id).options(
             selectinload(OrdenCompra.proveedor)
         )
         if with_lineas:
             query = query.options(selectinload(OrdenCompra.lineas))
+        configured_dialect = dialect_for(
+            "sqlite" if settings.IS_SQLITE else settings.DB_ENGINE
+        )
+        if lock and configured_dialect.supports_for_update:
+            query = query.with_for_update()
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
@@ -111,6 +119,7 @@ class ProcurementRepository:
         derivado de la línea de orden que lo referencia (LEFT JOIN no invasivo).
         """
         from app.models.core import Activo
+        from sqlalchemy import or_
 
         # Subconsulta: proveedor por activo vía línea de orden (una cualquiera).
         result = await self.db.execute(
@@ -122,7 +131,17 @@ class ProcurementRepository:
                 Activo.ACT_Fin_Garantia,
                 Proveedor.PRV_Nombre,
             )
-            .outerjoin(OrdenCompraLinea, OrdenCompraLinea.ACT_Activo == Activo.ACT_Activo)
+            .outerjoin(
+                OrdenCompraLineaActivo,
+                OrdenCompraLineaActivo.ACT_Activo == Activo.ACT_Activo,
+            )
+            .outerjoin(
+                OrdenCompraLinea,
+                or_(
+                    OrdenCompraLinea.OCL_Linea == OrdenCompraLineaActivo.OCL_Linea,
+                    OrdenCompraLinea.ACT_Activo == Activo.ACT_Activo,
+                ),
+            )
             .outerjoin(OrdenCompra, OrdenCompra.OCO_Orden == OrdenCompraLinea.OCO_Orden)
             .outerjoin(Proveedor, Proveedor.PRV_Proveedor == OrdenCompra.PRV_Proveedor)
             .order_by(Activo.ACT_Codigo_Interno)

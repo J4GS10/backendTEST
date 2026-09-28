@@ -14,6 +14,8 @@ class ConsumibleBase(BaseModel):
     CON_Categoria: Optional[str] = Field(None, max_length=50)
     CON_Unidad: str = Field("unidad", min_length=1, max_length=20)
     CON_Stock_Minimo: int = Field(0, ge=0)
+    # Bodega (sede) donde se almacena: alcance de datos.
+    SED_Sede: Optional[int] = None
 
 
 class ConsumibleCreate(ConsumibleBase):
@@ -28,6 +30,7 @@ class ConsumibleUpdate(BaseModel):
     CON_Unidad: Optional[str] = Field(None, min_length=1, max_length=20)
     CON_Stock_Minimo: Optional[int] = Field(None, ge=0)
     CON_Activo: Optional[bool] = None
+    SED_Sede: Optional[int] = None
 
 
 class ConsumibleResponse(ConsumibleBase):

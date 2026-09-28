@@ -1,9 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update, delete, func
+from sqlalchemy.orm import selectinload
 from typing import List, Optional
 
 from app.models.location import Pais, Estado, Municipio, Sede, Edificio, Nivel, Area
+from app.repositories.base import BaseRepository
 from app.schemas.location import (
     PaisCreate, PaisUpdate,
     EstadoCreate, EstadoUpdate,
@@ -15,10 +17,7 @@ from app.schemas.location import (
 )
 
 
-class LocationRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
+class LocationRepository(BaseRepository):
     # =================================================================
     # GENERIC HELPERS (para reducir repetición)
     # =================================================================
@@ -206,6 +205,18 @@ class LocationRepository:
 
     async def get_areas_by_nivel(self, nivel_id: int) -> List[Area]:
         result = await self.db.execute(select(Area).where(Area.NIV_Nivel == nivel_id))
+        return result.scalars().all()
+
+    async def get_all_areas_with_hierarchy(self) -> List[Area]:
+        result = await self.db.execute(
+            select(Area)
+            .options(
+                selectinload(Area.nivel)
+                .selectinload(Nivel.edificio)
+                .selectinload(Edificio.sede)
+            )
+            .order_by(Area.ARE_Nombre)
+        )
         return result.scalars().all()
 
     async def get_area_by_id(self, id: int) -> Optional[Area]:

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_client_ip, require_admin, require_operativo
+from app.api.idempotency import _IdempotencyGuard, idempotency_guard
 from app.core.limiter import limiter
 from app.db.session import get_db
 from app.schemas.consumable import (
@@ -72,9 +73,13 @@ async def delete_consumible(
 async def registrar_entrada(
     id: int, schema: StockMovimientoCreate, request: Request, current_user: CurrentUser,
     service: ConsumableService = Depends(get_service),
+    idempotency: _IdempotencyGuard = Depends(idempotency_guard),
 ):
     """Suma stock al consumible (compra, reabastecimiento)."""
-    return await service.registrar_entrada(id, schema, **_ctx(request, current_user))
+    return await idempotency.execute(
+        lambda: service.registrar_entrada(id, schema, **_ctx(request, current_user)),
+        status_code=201,
+    )
 
 
 @router.post("/{id}/salida", response_model=MovimientoConsumibleResponse, status_code=201, dependencies=OPERATIVO)
@@ -82,9 +87,13 @@ async def registrar_entrada(
 async def registrar_salida(
     id: int, schema: StockMovimientoCreate, request: Request, current_user: CurrentUser,
     service: ConsumableService = Depends(get_service),
+    idempotency: _IdempotencyGuard = Depends(idempotency_guard),
 ):
     """Descuenta stock (entrega a una persona). 409 si no hay stock suficiente."""
-    return await service.registrar_salida(id, schema, **_ctx(request, current_user))
+    return await idempotency.execute(
+        lambda: service.registrar_salida(id, schema, **_ctx(request, current_user)),
+        status_code=201,
+    )
 
 
 @router.get("/{id}/movimientos", response_model=List[MovimientoConsumibleResponse])

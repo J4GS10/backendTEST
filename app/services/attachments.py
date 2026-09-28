@@ -13,12 +13,18 @@ from __future__ import annotations
 import os
 import uuid
 
+import structlog
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.errors import internal_error
+from app.core.storage import (
+    StorageUnavailableError,
+    storage_for_backend,
+    storage_service,
+)
+from app.core.transactional import schedule_post_commit, transactional
 from app.models.attachment import Adjunto
 from app.models.core import Activo
 from app.models.procurement import OrdenCompra
@@ -26,6 +32,7 @@ from app.repositories.attachment import AttachmentRepository
 from app.repositories.governance import GovernanceRepository
 
 _VALID_CATEGORIES = {"factura", "foto", "acta", "otro"}
+log = structlog.get_logger("attachments")
 
 
 class AttachmentService:
@@ -35,13 +42,12 @@ class AttachmentService:
         self.gov_repo = GovernanceRepository(db)
 
     # --- Resolución de directorio por dueño (activo u orden) ---
-    def _dir(self, kind: str, owner_id) -> str:
-        return os.path.join(settings.UPLOAD_DIR, kind, str(owner_id))
-
-    def _dir_for(self, adjunto: Adjunto) -> str:
-        if adjunto.ACT_Activo is not None:
-            return self._dir("activos", adjunto.ACT_Activo)
-        return self._dir("ordenes", adjunto.OCO_Orden)
+    def _object_key_for(self, adjunto: Adjunto) -> str:
+        if adjunto.ADJ_Object_Key:
+            return adjunto.ADJ_Object_Key
+        kind = "activos" if adjunto.ACT_Activo is not None else "ordenes"
+        owner_id = adjunto.ACT_Activo or adjunto.OCO_Orden
+        return f"{kind}/{owner_id}/{adjunto.ADJ_Nombre_Almacenado}"
 
     async def _ensure_activo(self, activo_id: uuid.UUID) -> Activo:
         obj = (await self.db.execute(
@@ -87,6 +93,7 @@ class AttachmentService:
         return await self._upload("ordenes", orden_id, {"OCO_Orden": orden_id},
                                   file, categoria, descripcion, usuario_id, ip)
 
+    @transactional
     async def _upload(self, kind, owner_id, owner_fk: dict, file: UploadFile,
                       categoria, descripcion, usuario_id, ip):
         categoria = (categoria or "otro").lower()
@@ -106,20 +113,23 @@ class AttachmentService:
             raise HTTPException(400, "EMPTY_FILE")
 
         stored_name = f"{uuid.uuid4().hex}{ext}"
-        target_dir = self._dir(kind, owner_id)
-        os.makedirs(target_dir, exist_ok=True)
-        abs_path = os.path.join(target_dir, stored_name)
+        object_key = f"{kind}/{owner_id}/{stored_name}"
 
         try:
-            with open(abs_path, "wb") as fh:
-                fh.write(content)
-        except OSError as e:
-            raise internal_error(e, "STORAGE_WRITE_FAILED")
+            stored = await storage_service.put_bytes(
+                object_key, content, file.content_type or None
+            )
+        except StorageUnavailableError as exc:
+            raise HTTPException(503, str(exc)) from exc
 
         try:
             adjunto = Adjunto(
                 ADJ_Nombre_Original=original[:255],
                 ADJ_Nombre_Almacenado=stored_name,
+                ADJ_Storage_Backend=stored.backend,
+                ADJ_Bucket=stored.bucket,
+                ADJ_Object_Key=stored.object_key,
+                ADJ_Checksum_SHA256=stored.checksum_sha256,
                 ADJ_Tipo_MIME=(file.content_type or None),
                 ADJ_Tamano_Bytes=len(content),
                 ADJ_Categoria=categoria,
@@ -134,48 +144,56 @@ class AttachmentService:
                  "categoria": categoria, "tamano": len(content)},
                 usuario_id=usuario_id, ip_origen=ip,
             )
-            await self.db.commit()
-            await self.db.refresh(adjunto)
+            await self.db.flush()
             return adjunto
-        except HTTPException:
-            await self.db.rollback(); _safe_remove(abs_path); raise
-        except Exception as e:
-            await self.db.rollback(); _safe_remove(abs_path)
-            raise internal_error(e, "TRANSACTION_FAILED")
+        except Exception:
+            # The binary was written before the database row. Compensate only
+            # when persistence fails so storage and metadata stay consistent.
+            try:
+                await storage_service.delete(stored.object_key, stored.bucket)
+            except StorageUnavailableError:
+                log.error("storage.compensation_failed", object_key=stored.object_key)
+            raise
 
     async def get_for_download(self, id: uuid.UUID):
         adjunto = await self.repo.get_by_id(id)
         if not adjunto:
             raise HTTPException(404, "ATTACHMENT_NOT_FOUND")
-        abs_path = os.path.join(self._dir_for(adjunto), adjunto.ADJ_Nombre_Almacenado)
-        if not os.path.isfile(abs_path):
-            raise HTTPException(410, "ATTACHMENT_FILE_MISSING")
-        return adjunto, abs_path
-
-    async def delete(self, id: uuid.UUID, usuario_id=None, ip=None):
+        backend = adjunto.ADJ_Storage_Backend or "local"
+        selected_storage = storage_for_backend(backend)
         try:
-            adjunto = await self.repo.get_by_id(id)
-            if not adjunto:
-                raise HTTPException(404, "ATTACHMENT_NOT_FOUND")
-            abs_path = os.path.join(self._dir_for(adjunto), adjunto.ADJ_Nombre_Almacenado)
-            await self.repo.delete(id)
-            await self.gov_repo.create_audit_log(
-                "DELETE", "INV_ADJUNTO",
-                {"id": str(id), "nombre": adjunto.ADJ_Nombre_Original},
-                usuario_id=usuario_id, ip_origen=ip,
+            content = await selected_storage.get_bytes(
+                self._object_key_for(adjunto), adjunto.ADJ_Bucket
             )
-            await self.db.commit()
-            _safe_remove(abs_path)
-        except HTTPException:
-            await self.db.rollback(); raise
-        except Exception as e:
-            await self.db.rollback()
-            raise internal_error(e, "TRANSACTION_FAILED")
+        except StorageUnavailableError as exc:
+            if backend == "local" and str(exc) == "ATTACHMENT_FILE_MISSING":
+                raise HTTPException(410, "ATTACHMENT_FILE_MISSING") from exc
+            raise HTTPException(503, str(exc)) from exc
+        return adjunto, content
 
+    @transactional
+    async def delete(self, id: uuid.UUID, usuario_id=None, ip=None):
+        adjunto = await self.repo.get_by_id(id)
+        if not adjunto:
+            raise HTTPException(404, "ATTACHMENT_NOT_FOUND")
+        selected_storage = storage_for_backend(adjunto.ADJ_Storage_Backend or "local")
+        object_key = self._object_key_for(adjunto)
+        bucket = adjunto.ADJ_Bucket
+        await self.repo.delete(id)
+        await self.gov_repo.create_audit_log(
+            "DELETE", "INV_ADJUNTO",
+            {"id": str(id), "nombre": adjunto.ADJ_Nombre_Original},
+            usuario_id=usuario_id, ip_origen=ip,
+        )
 
-def _safe_remove(path: str) -> None:
-    try:
-        if os.path.isfile(path):
-            os.remove(path)
-    except OSError:
-        pass
+        async def _delete_binary() -> None:
+            try:
+                await selected_storage.delete(object_key, bucket)
+            except StorageUnavailableError as exc:
+                log.error(
+                    "storage.delete_orphaned",
+                    object_key=object_key,
+                    error=str(exc),
+                )
+
+        schedule_post_commit(self, _delete_binary)

@@ -5,6 +5,7 @@ from sqlalchemy.orm import selectinload
 from typing import List, Optional
 import uuid
 
+from app.repositories.base import BaseRepository
 from app.models.organization import Departamento, Cargo, Persona, Usuario
 from app.schemas.organization import (
     DepartamentoCreate, DepartamentoUpdate,
@@ -15,10 +16,7 @@ from app.schemas.organization import (
 from app.core.security import get_password_hash
 
 
-class DepartamentoRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
+class DepartamentoRepository(BaseRepository):
     async def get_all(self) -> List[Departamento]:
         result = await self.db.execute(select(Departamento))
         return result.scalars().all()
@@ -57,10 +55,7 @@ class DepartamentoRepository:
         await self.db.flush()
 
 
-class CargoRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
+class CargoRepository(BaseRepository):
     async def get_all(self) -> List[Cargo]:
         result = await self.db.execute(select(Cargo))
         return result.scalars().all()
@@ -95,12 +90,12 @@ class CargoRepository:
         await self.db.flush()
 
 
-class PersonaRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
-    async def get_all(self) -> List[Persona]:
-        result = await self.db.execute(select(Persona))
+class PersonaRepository(BaseRepository):
+    async def get_all(self, extra_filter=None) -> List[Persona]:
+        query = select(Persona)
+        if extra_filter is not None:
+            query = query.where(extra_filter)
+        result = await self.db.execute(query)
         return result.scalars().all()
 
     async def get_by_email(self, email: str) -> Optional[Persona]:
@@ -131,7 +126,7 @@ class PersonaRepository:
         )
         return result.scalar_one() > 0
 
-    async def get_available_for_user(self) -> List[Persona]:
+    async def get_available_for_user(self, extra_filter=None) -> List[Persona]:
         """
         Retorna personas que NO tienen un registro en la tabla INV_USUARIO.
         SQL: SELECT * FROM INV_PERSONA p LEFT JOIN INV_USUARIO u ON ... WHERE u.ID IS NULL
@@ -141,14 +136,13 @@ class PersonaRepository:
             .outerjoin(Usuario, Persona.PER_Persona == Usuario.PER_Persona)
             .where(Usuario.USU_Usuario == None)
         )
+        if extra_filter is not None:
+            query = query.where(extra_filter)
         result = await self.db.execute(query)
         return result.scalars().all()
     
     
-class UsuarioRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
+class UsuarioRepository(BaseRepository):
     async def get_all(self) -> List[Usuario]:
         query = select(Usuario).options(selectinload(Usuario.persona))
         result = await self.db.execute(query)
@@ -182,15 +176,28 @@ class UsuarioRepository:
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
+    async def get_by_persona_email(self, email: str) -> Optional[Usuario]:
+        query = (
+            select(Usuario)
+            .options(selectinload(Usuario.persona))
+            .join(Persona, Persona.PER_Persona == Usuario.PER_Persona)
+            .where(func.lower(Persona.PER_Email_Corporativo) == email.strip().lower())
+        )
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
+
     async def create(self, schema: UsuarioCreate) -> Usuario:
-        hashed_pwd = get_password_hash(schema.USU_Password)
+        hashed_pwd = get_password_hash(schema.USU_Password) if schema.USU_Password else None
         
         # Passlib (argon2/bcrypt) embebe el salt dentro del hash;
         # no hace falta una columna USU_Salt aparte (eliminada en migración f1a2b3c4d5e6).
         db_obj = Usuario(
+            USU_Alcance_Global=False,  # el servicio aplica el alcance validado
             USU_Username=schema.USU_Username,
             USU_Password_Hash=hashed_pwd,
             USU_Rol=schema.USU_Rol,
+            USU_SSO_Habilitado=schema.USU_SSO_Habilitado,
+            USU_SSO_Provider=schema.USU_SSO_Provider,
             PER_Persona=schema.PER_Persona
         )
         
@@ -200,8 +207,8 @@ class UsuarioRepository:
         # que rompe la serialización por MissingGreenlet.
         return await self.get_by_id(db_obj.USU_Usuario)
 
-    async def update(self, id: uuid.UUID, schema: UsuarioUpdate) -> Usuario:
-        update_data = schema.model_dump(exclude_unset=True)
+    async def update(self, id: uuid.UUID, schema: UsuarioUpdate, exclude: set[str] | None = None) -> Usuario:
+        update_data = schema.model_dump(exclude_unset=True, exclude=exclude or None)
 
         if "USU_Password" in update_data:
             update_data["USU_Password_Hash"] = get_password_hash(update_data.pop("USU_Password"))

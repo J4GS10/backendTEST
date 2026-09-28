@@ -1,8 +1,8 @@
 # Herramientas y dependencias
 
 Inventario completo de tecnologías, librerías y herramientas del proyecto, con versión y
-propósito. Fuentes: `backend/inventarioTI-backend/requirements.txt`,
-`backend/inventarioTI-frontend/package.json`, Dockerfiles y `docker-compose.yml`.
+propósito. Fuentes: `codigo/inventarioTI-backend/requirements.txt`,
+`codigo/inventarioTI-frontend/package.json`, Dockerfiles y `docker-compose.yml`.
 
 ## Backend (Python 3.11)
 

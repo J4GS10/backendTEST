@@ -1,11 +1,30 @@
-"""Fixtures pytest. Usa SQLite en memoria para tests rápidos."""
+"""
+Fixtures pytest. La suite corre SIEMPRE contra PostgreSQL 16, el motor de
+producción (índices parciales, CHECKs, bloqueos y políticas RLS reales).
+
+    python ../herramientas-qa/pruebas_backend.py      # levanta la base y ejecuta todo
+    TEST_DATABASE_URL=postgresql+psycopg://t:t@localhost:55433/t python -m pytest tests/
+"""
 import os
 # Forzar configuración de tests ANTES de cualquier import de app.*.
 # Asignación directa (no setdefault) para sobrescribir lo que venga de docker-compose.
-os.environ["POSTGRES_SERVER"] = "sqlite"
-os.environ["POSTGRES_USER"] = "test"
-os.environ["POSTGRES_PASSWORD"] = "test"
-os.environ["POSTGRES_DB"] = "test"
+from urllib.parse import urlparse as _urlparse
+
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+if not TEST_DATABASE_URL.startswith("postgresql"):
+    raise SystemExit(
+        "Las pruebas se ejecutan solo contra PostgreSQL (motor de producción). "
+        "Use: python ../herramientas-qa/pruebas_backend.py  "
+        "o defina TEST_DATABASE_URL=postgresql+psycopg://usuario:clave@host:puerto/base"
+    )
+_u = _urlparse(TEST_DATABASE_URL)
+os.environ["DB_ENGINE"] = "postgres"
+os.environ["DB_WRITE_DSN"] = TEST_DATABASE_URL
+os.environ["POSTGRES_SERVER"] = _u.hostname or "localhost"
+os.environ["POSTGRES_PORT"] = str(_u.port or 5432)
+os.environ["POSTGRES_USER"] = _u.username or "test"
+os.environ["POSTGRES_PASSWORD"] = _u.password or "test"
+os.environ["POSTGRES_DB"] = (_u.path or "/test").lstrip("/")
 os.environ["SECRET_KEY"] = "test_secret_key_for_unit_tests_only_at_least_32_chars_long"
 os.environ["ENVIRONMENT"] = "development"
 os.environ["DEBUG"] = "false"
@@ -22,6 +41,9 @@ os.environ["UPLOAD_DIR"] = _tempfile.mkdtemp(prefix="lombardi_uploads_")
 # Throttle de reset por cuenta desactivado por defecto en tests (los tests que
 # lo ejercen lo activan vía monkeypatch). Así los demás no chocan con la ventana.
 os.environ["PASSWORD_RESET_REQUEST_COOLDOWN_MINUTES"] = "0"
+# MFA obligatorio por rol desactivado por defecto: el admin del fixture no tiene
+# MFA y la política lo bloquearía en todos los tests. test_iam.py la activa.
+os.environ["TWO_FACTOR_REQUIRED_ROLES"] = ""
 
 import asyncio
 from typing import AsyncIterator
@@ -32,7 +54,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.base import Base
-from app.db.session import get_db
+from app.db.session import get_db, get_read_db
 from app.main import app
 
 
@@ -59,24 +81,48 @@ def _reset_rate_limiter():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_integration_state():
+    """Caché de config de correo/AD y cortacircuitos son de proceso: aislarlos por test."""
+    from app.services import integration_config
+    integration_config.invalidate()
+    integration_config._breaker_local.clear()
+    yield
+    integration_config.invalidate()
+    integration_config._breaker_local.clear()
+
+
+_PG_SCHEMA_READY = False
+
+
+async def _postgres_engine():
+    """Esquema creado una vez; entre tests se vacían las tablas (TRUNCATE)."""
+    global _PG_SCHEMA_READY
+    from sqlalchemy import text
+    from sqlalchemy.pool import NullPool
+    from app.core.data_scope import set_db_rls_available
+    set_db_rls_available(True)
+    e = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    async with e.begin() as conn:
+        if not _PG_SCHEMA_READY:
+            # Esquema desde cero: las políticas RLS de una ejecución anterior
+            # dependen de las tablas e impedirían un drop_all.
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+            await conn.run_sync(Base.metadata.create_all)
+            # Capa RLS real (rol restringido + políticas), como en producción.
+            from app.db.rls import install_rls
+            await conn.run_sync(lambda c: install_rls(c, strict=True))
+            _PG_SCHEMA_READY = True
+        else:
+            tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+            await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+    return e
+
+
 @pytest_asyncio.fixture(scope="function")
 async def engine():
-    # Cada test arranca con DB limpia en memoria.
-    e = create_async_engine("sqlite+aiosqlite:///:memory:", future=True, echo=False)
-
-    # SQLite NO aplica claves foráneas por defecto. Lo activamos para que los
-    # tests reflejen el comportamiento de Postgres (FK RESTRICT → IntegrityError
-    # → 409 al borrar registros en uso, etc.).
-    from sqlalchemy import event
-
-    @event.listens_for(e.sync_engine, "connect")
-    def _enable_sqlite_fk(dbapi_conn, _rec):  # noqa: ANN001
-        cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA foreign_keys=ON")
-        cur.close()
-
-    async with e.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    e = await _postgres_engine()
     yield e
     await e.dispose()
 
@@ -97,6 +143,7 @@ async def client(engine) -> AsyncIterator[AsyncClient]:
             yield s
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_read_db] = override_get_db
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
@@ -276,6 +323,7 @@ async def domain_seed(session, sa_user):
         "tmo_pres": tmo_pres.TMO_Tipo_Movimiento,
         "tmo_tra": tmo_tra.TMO_Tipo_Movimiento,
         "area": area.ARE_Area,
+        "sede": sede.SED_Sede,
         "alice": str(alice.PER_Persona),
         "bob": str(bob.PER_Persona),
         "act_1": str(act_1.ACT_Activo),  # Disponible
@@ -310,7 +358,50 @@ async def software_seed(session, domain_seed):
     return {
         **domain_seed,
         "sof": sof.SOF_Software,
+        "tli": tli.TLI_Tipo_Licencia,
         "lic": lic.LIC_Licencia,
         "tma_corr": tma_corr.TMA_Tipo_Mantenimiento,
         "tma_prev": tma_prev.TMA_Tipo_Mantenimiento,
     }
+
+
+async def crear_sede(session, nombre: str = "Sede Test", *, con_area: bool = True) -> dict:
+    """
+    Crea una sede con su jerarquía mínima (país → estado → municipio → sede →
+    edificio → nivel → área) y devuelve los ids. Útil para tests de alcance.
+    """
+    from sqlalchemy import select
+    from app.models.location import Area, Edificio, Estado, Municipio, Nivel, Pais, Sede
+
+    pais = (await session.execute(select(Pais).where(Pais.PAI_Codigo_ISO == "TS"))).scalar_one_or_none()
+    if pais is None:
+        pais = Pais(PAI_Nombre="Testlandia", PAI_Codigo_ISO="TS")
+        session.add(pais)
+        await session.flush()
+        edo = Estado(EST_Nombre="Estado Test", PAI_Pais=pais.PAI_Pais)
+        session.add(edo)
+        await session.flush()
+        muni = Municipio(MUN_Nombre="Municipio Test", EST_Estado=edo.EST_Estado)
+        session.add(muni)
+        await session.flush()
+    else:
+        muni = (await session.execute(
+            select(Municipio).join(Estado).where(Estado.PAI_Pais == pais.PAI_Pais)
+        )).scalars().first()
+    sede = Sede(SED_Nombre=nombre, MUN_Municipio=muni.MUN_Municipio)
+    session.add(sede)
+    await session.flush()
+    ids = {"sede": sede.SED_Sede}
+    if con_area:
+        edif = Edificio(EDI_Nombre=f"Edificio {nombre}", SED_Sede=sede.SED_Sede)
+        session.add(edif)
+        await session.flush()
+        niv = Nivel(NIV_Numero_Piso="1", EDI_Edificio=edif.EDI_Edificio)
+        session.add(niv)
+        await session.flush()
+        area = Area(ARE_Nombre=f"Área {nombre}", NIV_Nivel=niv.NIV_Nivel)
+        session.add(area)
+        await session.flush()
+        ids["area"] = area.ARE_Area
+    await session.commit()
+    return ids

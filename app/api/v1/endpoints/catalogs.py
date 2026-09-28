@@ -14,6 +14,7 @@ from app.schemas.catalogs import (
     TipoEspecificacionCreate, TipoEspecificacionResponse, TipoEspecificacionUpdate,
 )
 from app.services.catalogs import CatalogService
+from app.services.suggestions import SuggestionService
 
 router = APIRouter()
 
@@ -251,3 +252,9 @@ async def delete_tipo_especificacion(
     service: CatalogService = Depends(get_service),
 ):
     await service.delete_tipo_especificacion(id, usuario_id=current_user.USU_Usuario, ip=get_client_ip(request))
+
+
+@router.get("/modelos/{id}/contexto")
+async def modelo_contexto(id: int, db: AsyncSession = Depends(get_db)):
+    """Marca del modelo y el tipo de activo con que suele registrarse."""
+    return await SuggestionService(db).modelo(id)

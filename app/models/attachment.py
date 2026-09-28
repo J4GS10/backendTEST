@@ -24,6 +24,12 @@ class Adjunto(Base):
     # Nombre con que se guardó en disco (uuid + extensión) — evita colisiones y
     # path traversal a partir del nombre que envía el cliente.
     ADJ_Nombre_Almacenado = Column(String(255), nullable=False)
+    ADJ_Storage_Backend = Column(
+        String(20), nullable=False, default="local", server_default="local"
+    )
+    ADJ_Bucket = Column(String(255), nullable=True)
+    ADJ_Object_Key = Column(String(1024), nullable=True)
+    ADJ_Checksum_SHA256 = Column(String(64), nullable=True)
     ADJ_Tipo_MIME = Column(String(120), nullable=True)
     ADJ_Tamano_Bytes = Column(Integer, nullable=False)
     # factura | foto | acta | otro

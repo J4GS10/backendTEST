@@ -36,7 +36,7 @@ curl -sk https://localhost/ -o /dev/null -w "%{http_code}\n"   # 200
 docker exec lombardi-backend-1 python -m pytest tests/         # 138 verdes
 
 # 5. Build del frontend (type-check + bundle)
-cd backend/inventarioTI-frontend && npm run build
+cd codigo/inventarioTI-frontend && npm run build
 ```
 
 Acceso: la app se sirve por **Caddy** en `https://localhost` (TLS automático). El

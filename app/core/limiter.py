@@ -49,13 +49,23 @@ def client_ip_key(request: Request) -> str:
     return get_remote_address(request)
 
 
-_limiter_kwargs = {
-    "key_func": client_ip_key,
-    "default_limits": [settings.RATE_LIMIT_DEFAULT],
-}
-# Si hay REDIS_URL, el rate-limit es compartido entre workers/réplicas.
-# Si no, fallback a memoria local del proceso (válido para single-worker dev).
-if settings.REDIS_URL:
-    _limiter_kwargs["storage_uri"] = settings.REDIS_URL
+def limiter_options(redis_url: str | None) -> dict:
+    options = {
+        "key_func": client_ip_key,
+        "default_limits": [settings.RATE_LIMIT_DEFAULT],
+    }
+    if redis_url:
+        options.update(
+            {
+                "storage_uri": redis_url,
+                # Limits conmuta a un limiter en memoria por worker cuando
+                # Redis no responde. El negocio sigue operativo, aunque el
+                # límite deja de ser global hasta que Redis se recupere.
+                "in_memory_fallback_enabled": True,
+                "swallow_errors": True,
+            }
+        )
+    return options
 
-limiter = Limiter(**_limiter_kwargs)
+
+limiter = Limiter(**limiter_options(settings.REDIS_URL))

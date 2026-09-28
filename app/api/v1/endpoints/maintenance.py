@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_client_ip, require_admin, require_operativo
+from app.api.idempotency import _IdempotencyGuard, idempotency_guard
 from app.db.session import get_db
 from app.schemas.maintenance import (
     DetalleCreate, DetalleResponse,
@@ -77,8 +78,12 @@ async def get_mantenimiento(id: uuid.UUID, service: MaintenanceService = Depends
 async def registrar_mantenimiento(
     schema: MantenimientoCreate, request: Request, current_user: CurrentUser,
     service: MaintenanceService = Depends(get_service),
+    idempotency: _IdempotencyGuard = Depends(idempotency_guard),
 ):
-    return await service.registrar_mantenimiento(schema, **_ctx(request, current_user))
+    return await idempotency.execute(
+        lambda: service.registrar_mantenimiento(schema, **_ctx(request, current_user)),
+        status_code=201,
+    )
 
 
 @router.patch("/{mantenimiento_id}/cerrar", response_model=MantenimientoResponse, dependencies=OPERATIVO)

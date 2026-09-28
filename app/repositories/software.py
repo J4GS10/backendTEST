@@ -13,8 +13,10 @@ from typing import List, Optional
 from sqlalchemy import delete, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 
-from app.models.software import Instalacion, Licencia, Software, TipoLicencia
+from app.models.software import Instalacion, Licencia, LicenciaClave, Software, TipoLicencia
+from app.repositories.base import BaseRepository
 from app.schemas.software import (
     InstalacionCreate,
     LicenciaCreate,
@@ -26,10 +28,7 @@ from app.schemas.software import (
 )
 
 
-class SoftwareRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
+class SoftwareRepository(BaseRepository):
     # =====================================================================
     # TIPO LICENCIA
     # =====================================================================
@@ -110,10 +109,115 @@ class SoftwareRepository:
     # LICENCIAS
     # =====================================================================
     async def create_licencia(self, schema: LicenciaCreate) -> Licencia:
-        obj = Licencia(**schema.model_dump())
+        obj = Licencia(**schema.model_dump(exclude={"LIC_Claves"}))
         self.db.add(obj)
         await self.db.flush()
         return obj
+
+    async def create_licencia_clave(
+        self,
+        licencia_id: int,
+        *,
+        clave_cifrada: str,
+        clave_hash: str,
+        referencia: str | None = None,
+    ) -> LicenciaClave:
+        obj = LicenciaClave(
+            LIC_Licencia=licencia_id,
+            LCL_Clave_Activacion=clave_cifrada,
+            LCL_Clave_Hash=clave_hash,
+            LCL_Referencia=referencia,
+            LCL_Estado="DISPONIBLE",
+        )
+        self.db.add(obj)
+        await self.db.flush()
+        return obj
+
+    async def get_claves_by_licencia(self, licencia_id: int) -> List[LicenciaClave]:
+        result = await self.db.execute(
+            select(LicenciaClave)
+            .options(
+                selectinload(LicenciaClave.instalaciones).selectinload(Instalacion.activo),
+                selectinload(LicenciaClave.instalaciones).selectinload(Instalacion.persona),
+            )
+            .where(LicenciaClave.LIC_Licencia == licencia_id)
+            .order_by(LicenciaClave.LCL_Licencia_Clave)
+        )
+        return result.scalars().all()
+
+    async def get_clave_by_id(self, clave_id: int) -> Optional[LicenciaClave]:
+        result = await self.db.execute(
+            select(LicenciaClave).where(LicenciaClave.LCL_Licencia_Clave == clave_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def count_claves_by_hashes(self, hashes: list[str]) -> int:
+        if not hashes:
+            return 0
+        result = await self.db.execute(
+            select(func.count())
+            .select_from(LicenciaClave)
+            .where(LicenciaClave.LCL_Clave_Hash.in_(hashes))
+        )
+        return result.scalar_one()
+
+    async def count_claves_by_licencia(self, licencia_id: int) -> int:
+        result = await self.db.execute(
+            select(func.count()).select_from(LicenciaClave).where(LicenciaClave.LIC_Licencia == licencia_id)
+        )
+        return result.scalar_one()
+
+    async def count_claves_by_estado(self, licencia_id: int) -> dict[str, int]:
+        result = await self.db.execute(
+            select(LicenciaClave.LCL_Estado, func.count())
+            .where(LicenciaClave.LIC_Licencia == licencia_id)
+            .group_by(LicenciaClave.LCL_Estado)
+        )
+        return {estado: count for estado, count in result.all()}
+
+    async def reservar_clave_licencia(
+        self,
+        licencia_id: int,
+        clave_id: int,
+    ) -> bool:
+        result = await self.db.execute(
+            update(LicenciaClave)
+            .where(
+                LicenciaClave.LCL_Licencia_Clave == clave_id,
+                LicenciaClave.LIC_Licencia == licencia_id,
+                LicenciaClave.LCL_Estado == "DISPONIBLE",
+            )
+            .values(LCL_Estado="ASIGNADA")
+        )
+        await self.db.flush()
+        return result.rowcount == 1
+
+    async def reservar_clave_disponible(self, licencia_id: int) -> Optional[LicenciaClave]:
+        result = await self.db.execute(
+            select(LicenciaClave.LCL_Licencia_Clave)
+            .where(
+                LicenciaClave.LIC_Licencia == licencia_id,
+                LicenciaClave.LCL_Estado == "DISPONIBLE",
+            )
+            .order_by(LicenciaClave.LCL_Licencia_Clave)
+            .limit(20)
+        )
+        for clave_id in result.scalars().all():
+            if await self.reservar_clave_licencia(licencia_id, clave_id):
+                return await self.get_clave_by_id(clave_id)
+        return None
+
+    async def liberar_clave_licencia(self, clave_id: int) -> bool:
+        result = await self.db.execute(
+            update(LicenciaClave)
+            .where(
+                LicenciaClave.LCL_Licencia_Clave == clave_id,
+                LicenciaClave.LCL_Estado == "ASIGNADA",
+            )
+            .values(LCL_Estado="DISPONIBLE")
+        )
+        await self.db.flush()
+        return result.rowcount == 1
 
     async def get_licencia_by_id(self, id: int) -> Optional[Licencia]:
         result = await self.db.execute(select(Licencia).where(Licencia.LIC_Licencia == id))
@@ -202,32 +306,130 @@ class SoftwareRepository:
         result = await self.db.execute(query)
         return result.scalars().all()
 
+    async def get_instalaciones_by_persona(
+        self, persona_id: uuid.UUID, solo_activas: bool = True
+    ) -> List[Instalacion]:
+        from sqlalchemy.orm import selectinload
+        query = (
+            select(Instalacion)
+            .options(
+                selectinload(Instalacion.licencia).selectinload(Licencia.software),
+                selectinload(Instalacion.licencia).selectinload(Licencia.tipo_licencia),
+            )
+            .where(Instalacion.PER_Persona == persona_id)
+        )
+        if solo_activas:
+            query = query.where(Instalacion.INS_Estado.is_(True))
+        result = await self.db.execute(query)
+        return result.scalars().all()
+
     async def get_instalacion_activa(
-        self, activo_id: uuid.UUID, licencia_id: int
+        self,
+        licencia_id: int,
+        *,
+        activo_id: uuid.UUID | None = None,
+        persona_id: uuid.UUID | None = None,
     ) -> Optional[Instalacion]:
+        if (activo_id is None) == (persona_id is None):
+            raise ValueError("INSTALLATION_TARGET_XOR_REQUIRED")
         query = select(Instalacion).where(
-            Instalacion.ACT_Activo == activo_id,
             Instalacion.LIC_Licencia == licencia_id,
             Instalacion.INS_Estado.is_(True),
         )
+        if activo_id is not None:
+            query = query.where(Instalacion.ACT_Activo == activo_id)
+        else:
+            query = query.where(Instalacion.PER_Persona == persona_id)
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
     async def desactivar_instalacion_atomico(
-        self, activo_id: uuid.UUID, licencia_id: int
+        self,
+        licencia_id: int,
+        *,
+        activo_id: uuid.UUID | None = None,
+        persona_id: uuid.UUID | None = None,
     ) -> bool:
         """
         UPDATE condicional: solo desactiva si está activa. Retorna True si
         cambió 1 fila. Esto previene doble-desinstalación que decrementa
         el contador dos veces.
         """
+        if (activo_id is None) == (persona_id is None):
+            raise ValueError("INSTALLATION_TARGET_XOR_REQUIRED")
+        target_filter = (
+            Instalacion.ACT_Activo == activo_id
+            if activo_id is not None
+            else Instalacion.PER_Persona == persona_id
+        )
         result = await self.db.execute(
             update(Instalacion)
             .where(
-                Instalacion.ACT_Activo == activo_id,
+                target_filter,
                 Instalacion.LIC_Licencia == licencia_id,
                 Instalacion.INS_Estado.is_(True),
             )
             .values(INS_Estado=False)
         )
         return result.rowcount == 1
+
+    async def liberar_instalaciones_por_destino(
+        self,
+        *,
+        activos_ids: list[uuid.UUID] | None = None,
+        persona_id: uuid.UUID | None = None,
+    ) -> int:
+        conditions = []
+        if activos_ids:
+            conditions.append(Instalacion.ACT_Activo.in_(activos_ids))
+        if persona_id:
+            conditions.append(Instalacion.PER_Persona == persona_id)
+        if not conditions:
+            return 0
+
+        from sqlalchemy import or_
+
+        result = await self.db.execute(
+            select(Instalacion).where(
+                or_(*conditions),
+                Instalacion.INS_Estado.is_(True),
+            )
+        )
+        instalaciones = result.scalars().all()
+        if not instalaciones:
+            return 0
+
+        ids = [inst.INS_Instalacion for inst in instalaciones]
+        claves_ids = [
+            inst.LCL_Licencia_Clave for inst in instalaciones
+            if inst.LCL_Licencia_Clave is not None
+        ]
+        conteo_por_licencia: dict[int, int] = {}
+        for inst in instalaciones:
+            conteo_por_licencia[inst.LIC_Licencia] = conteo_por_licencia.get(inst.LIC_Licencia, 0) + 1
+
+        await self.db.execute(
+            update(Instalacion)
+            .where(Instalacion.INS_Instalacion.in_(ids), Instalacion.INS_Estado.is_(True))
+            .values(INS_Estado=False)
+        )
+        for licencia_id, cantidad in conteo_por_licencia.items():
+            await self.db.execute(
+                update(Licencia)
+                .where(
+                    Licencia.LIC_Licencia == licencia_id,
+                    Licencia.LIC_Cantidad_Usada >= cantidad,
+                )
+                .values(LIC_Cantidad_Usada=Licencia.LIC_Cantidad_Usada - cantidad)
+            )
+        if claves_ids:
+            await self.db.execute(
+                update(LicenciaClave)
+                .where(
+                    LicenciaClave.LCL_Licencia_Clave.in_(claves_ids),
+                    LicenciaClave.LCL_Estado == "ASIGNADA",
+                )
+                .values(LCL_Estado="DISPONIBLE")
+            )
+        await self.db.flush()
+        return len(instalaciones)

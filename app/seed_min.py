@@ -27,6 +27,7 @@ import logging
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
+from app.models.enums import EstadoOperativoEnum, TipoMovimientoEnum
 from app.models.catalogs import EstadoOperativo, TipoEspecificacion
 from app.models.traceability import TipoEvidencia, TipoMantenimiento, TipoMovimiento
 
@@ -37,18 +38,20 @@ log = logging.getLogger("seed_min")
 # (modelo, atributo-nombre-único, lista de kwargs por fila)
 _CANONICAL = [
     (EstadoOperativo, "EOP_Nombre", [
-        {"EOP_Nombre": "Disponible", "EOP_Descripcion": "Listo para asignación"},
-        {"EOP_Nombre": "Asignado", "EOP_Descripcion": "En uso por una persona"},
-        {"EOP_Nombre": "En Reparación", "EOP_Descripcion": "Mantenimiento abierto"},
-        {"EOP_Nombre": "Baja", "EOP_Descripcion": "Fuera de inventario"},
-        {"EOP_Nombre": "En Bodega", "EOP_Descripcion": "Almacenado sin asignar"},
+        {"EOP_Nombre": EstadoOperativoEnum.DISPONIBLE.value, "EOP_Descripcion": "Listo para asignación"},
+        {"EOP_Nombre": EstadoOperativoEnum.ASIGNADO.value, "EOP_Descripcion": "En uso por una persona"},
+        {"EOP_Nombre": EstadoOperativoEnum.REPARACION.value, "EOP_Descripcion": "Mantenimiento abierto"},
+        {"EOP_Nombre": EstadoOperativoEnum.BAJA.value, "EOP_Descripcion": "Fuera de inventario"},
+        {"EOP_Nombre": EstadoOperativoEnum.BODEGA.value, "EOP_Descripcion": "Almacenado sin asignar"},
+        {"EOP_Nombre": EstadoOperativoEnum.TRANSITO.value, "EOP_Descripcion": "Movimiento entre sedes"},
     ]),
     (TipoMovimiento, "TMO_Nombre", [
-        {"TMO_Nombre": "Ingreso"},
-        {"TMO_Nombre": "Asignación"},
-        {"TMO_Nombre": "Devolución"},
-        {"TMO_Nombre": "Préstamo"},
-        {"TMO_Nombre": "Transferencia"},
+        {"TMO_Nombre": TipoMovimientoEnum.INGRESO.value},
+        {"TMO_Nombre": TipoMovimientoEnum.ASIGNACION.value},
+        {"TMO_Nombre": TipoMovimientoEnum.DEVOLUCION.value},
+        {"TMO_Nombre": TipoMovimientoEnum.PRESTAMO.value},
+        {"TMO_Nombre": TipoMovimientoEnum.TRANSFERENCIA.value},
+        {"TMO_Nombre": TipoMovimientoEnum.BAJA.value},
     ]),
     (TipoMantenimiento, "TMA_Nombre", [
         {"TMA_Nombre": "Preventivo"},

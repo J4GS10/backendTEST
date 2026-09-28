@@ -44,10 +44,19 @@ class Activo(Base):
         ForeignKey("INV_ACTIVO.ACT_Activo", ondelete="SET NULL"),
         nullable=True,
     )
+    # Sede a la que pertenece el activo (también en bodega). Se actualiza al
+    # asignarlo o transferirlo a un área de otra sede. Base del RLS por sede.
+    SED_Sede = Column(
+        Integer,
+        ForeignKey("INV_SEDE.SED_Sede", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
 
     modelo = relationship("app.models.catalogs.Modelo", back_populates="activos")
     tipo_activo = relationship("app.models.catalogs.TipoActivo", back_populates="activos")
     estado_operativo = relationship("app.models.catalogs.EstadoOperativo", back_populates="activos")
+    sede = relationship("app.models.location.Sede")
 
     hijos = relationship("Activo", backref="padre", remote_side=[ACT_Activo])
     especificaciones = relationship(

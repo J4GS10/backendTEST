@@ -16,6 +16,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.db.dialects import dialect_for
 from app.models.catalogs import Modelo, TipoActivo
 from app.models.core import Activo
 from app.models.location import Area
@@ -33,12 +34,10 @@ from app.schemas.traceability import (
     TipoMovimientoCreate,
     TipoMovimientoUpdate,
 )
+from app.repositories.base import BaseRepository
 
 
-class TraceabilityRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
+class TraceabilityRepository(BaseRepository):
     # =====================================================================
     # TIPO MOVIMIENTO
     # =====================================================================
@@ -117,7 +116,10 @@ class TraceabilityRepository:
                 Movimiento.MOV_Fecha_Devolucion.is_(None),
             )
         )
-        if lock and not settings.IS_SQLITE:
+        configured_dialect = dialect_for(
+            "sqlite" if settings.IS_SQLITE else settings.DB_ENGINE
+        )
+        if lock and configured_dialect.supports_for_update:
             query = query.with_for_update()
         result = await self.db.execute(query)
         return result.scalar_one_or_none()

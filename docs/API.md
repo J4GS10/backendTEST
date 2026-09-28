@@ -15,7 +15,7 @@
 
 ## Convenciones
 - **Roles:** `SUPER_ADMIN` ⊃ `ADMIN_TI` ⊃ `TECNICO`; `CONSULTA` = solo lectura.
-  Ver la matriz completa en `backend/inventarioTI-backend/docs/RBAC_MATRIX.md`.
+  Ver la matriz completa en `codigo/inventarioTI-backend/docs/RBAC_MATRIX.md`.
 - **Errores:** `401` no autenticado · `403` sin permiso · `404` no existe ·
   `409` conflicto de integridad · `422` validación de entrada · `429` rate-limit.
 - **Paginación:** `skip`/`limit` (tope `PAGINATION_MAX_LIMIT`). Búsquedas devuelven

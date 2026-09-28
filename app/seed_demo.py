@@ -259,18 +259,21 @@ async def seed_demo() -> None:
             USU_Username="jramirez",
             USU_Password_Hash=get_password_hash("Lombardi#2026"),
             USU_Rol="ADMIN_TI",
+            USU_Alcance_Global=True,  # demo: ven todas las sedes
             PER_Persona=personas[2].PER_Persona,
         ))
         db.add(Usuario(
             USU_Username="atorres",
             USU_Password_Hash=get_password_hash("Lombardi#2026"),
             USU_Rol="TECNICO",
+            USU_Alcance_Global=True,  # demo: ven todas las sedes
             PER_Persona=personas[3].PER_Persona,
         ))
         db.add(Usuario(
             USU_Username="mgarcia",
             USU_Password_Hash=get_password_hash("Lombardi#2026"),
             USU_Rol="CONSULTA",
+            USU_Alcance_Global=True,  # demo: ven todas las sedes
             PER_Persona=personas[1].PER_Persona,
         ))
 

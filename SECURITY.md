@@ -92,5 +92,5 @@ gzip -c dump.sql | age -r <age-public-key> > dump.sql.gz.age
 
 ## 5. Verificación de dependencias (CI)
 ```bash
-pip-audit -r backend/inventarioTI-backend/requirements.txt
+pip-audit -r codigo/inventarioTI-backend/requirements.txt
 ```

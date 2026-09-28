@@ -29,12 +29,10 @@ from app.schemas.catalogs import (
     TipoEspecificacionCreate,
     TipoEspecificacionUpdate,
 )
+from app.repositories.base import BaseRepository
 
 
-class CatalogRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
+class CatalogRepository(BaseRepository):
     # =====================================================================
     # TIPO DE ACTIVO
     # =====================================================================

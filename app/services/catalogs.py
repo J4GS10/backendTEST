@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.transactional import commit_or_409
 from app.repositories.catalogs import CatalogRepository
 from app.repositories.governance import GovernanceRepository
+from app.services.base import BaseService
 from app.schemas.catalogs import (
     EstadoOperativoCreate, EstadoOperativoUpdate,
     MarcaCreate, MarcaUpdate,
@@ -31,10 +32,11 @@ _PROTECTED_ESTADO_NAMES = frozenset(
 )
 
 
-class CatalogService:
+class CatalogService(BaseService[CatalogRepository]):
+    repo_class = CatalogRepository
+
     def __init__(self, db: AsyncSession):
-        self.db = db
-        self.repo = CatalogRepository(db)
+        super().__init__(db)
         self.gov_repo = GovernanceRepository(db)
 
     async def _commit_or_rollback(self):

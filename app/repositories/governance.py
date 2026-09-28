@@ -8,21 +8,22 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import func, update
+from sqlalchemy import func, insert, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from datetime import datetime, timedelta
 
 from app.core.config import settings
+from app.db.dialects import dialect_for
 from app.core.errors import utcnow_naive
 from app.models.governance import AuditoriaSistema, ConfiguracionSistema, Secuencia, TokenRevocado
+from app.repositories.base import BaseRepository
 from app.schemas.governance import ConfigUpdate
 
 
-class GovernanceRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+class GovernanceRepository(BaseRepository):
 
     # =====================================================================
     # CONFIGURACIÓN (Singleton)
@@ -70,21 +71,27 @@ class GovernanceRepository:
         # ON CONFLICT DO NOTHING evita que dos altas concurrentes del primer
         # código de un contexto choquen (antes: ambas veían None e insertaban,
         # una fallaba con IntegrityError).
-        if settings.IS_SQLITE:
-            from sqlalchemy.dialects.sqlite import insert as _insert
-        else:
-            from sqlalchemy.dialects.postgresql import insert as _insert
-        await self.db.execute(
-            _insert(Secuencia)
-            .values(SEC_Contexto=contexto, SEC_Ultimo_Numero=0, SEC_Relleno=relleno)
-            .on_conflict_do_nothing(index_elements=[Secuencia.SEC_Contexto])
-        )
+        try:
+            async with self.db.begin_nested():
+                await self.db.execute(
+                    insert(Secuencia).values(
+                        SEC_Contexto=contexto,
+                        SEC_Ultimo_Numero=0,
+                        SEC_Relleno=relleno,
+                    )
+                )
+        except IntegrityError:
+            # Otro request creó la misma secuencia mientras esperábamos.
+            pass
         await self.db.flush()
 
         # Lock de fila (Postgres) + incremento atómico. En SQLite la propia
         # transacción de escritura serializa el acceso.
         query = select(Secuencia).where(Secuencia.SEC_Contexto == contexto)
-        if not settings.IS_SQLITE:
+        configured_dialect = dialect_for(
+            "sqlite" if settings.IS_SQLITE else settings.DB_ENGINE
+        )
+        if configured_dialect.supports_for_update:
             query = query.with_for_update()
         secuencia = (await self.db.execute(query)).scalar_one()
 
@@ -113,6 +120,34 @@ class GovernanceRepository:
         self.db.add(obj)
         await self.db.flush()
         return obj
+
+    async def revoke_jti_once(
+        self,
+        jti: str,
+        tipo: str,
+        expira: datetime,
+        usuario_id: uuid.UUID | None = None,
+    ) -> bool:
+        """
+        Revoca un jti de forma ATÓMICA. Devuelve False si ya estaba revocado
+        (otro request lo revocó antes). Usa un SAVEPOINT para que el conflicto
+        de PK no invalide la transacción externa. Es la base de la rotación
+        segura del refresh token ante requests concurrentes.
+        """
+        try:
+            async with self.db.begin_nested():
+                self.db.add(TokenRevocado(
+                    TRV_Jti=jti, TRV_Tipo=tipo, TRV_Expira=expira, USU_Usuario=usuario_id,
+                    TRV_Fecha_Revocacion=utcnow_naive(),
+                ))
+            return True
+        except IntegrityError:
+            return False
+
+    async def get_revocation(self, jti: str) -> TokenRevocado | None:
+        return (await self.db.execute(
+            select(TokenRevocado).where(TokenRevocado.TRV_Jti == jti)
+        )).scalar_one_or_none()
 
     async def purge_expired_security_records(self) -> dict:
         """
@@ -148,12 +183,20 @@ class GovernanceRepository:
                 (TwoFactorCode.TFC_Expira < now) | (TwoFactorCode.TFC_Usado.is_(True))
             )
         )
-        await self.db.commit()
+        # Correos ya entregados (la auditoría de negocio vive en AUDITORIA).
+        from app.models.governance import EmailOutbox
+        mail = await self.db.execute(
+            delete(EmailOutbox).where(
+                EmailOutbox.EOB_Estado == "ENVIADO",
+                EmailOutbox.EOB_Enviado_En < now - timedelta(days=settings.OUTBOX_RETENTION_DAYS),
+            )
+        )
         return {
             "tokens_revocados_eliminados": tok.rowcount,
             "idempotency_keys_eliminadas": idem.rowcount,
             "reset_tokens_eliminados": prt.rowcount,
             "otp_2fa_eliminados": otp.rowcount,
+            "correos_enviados_eliminados": mail.rowcount,
         }
 
     async def is_jti_revoked(self, jti: str) -> bool:
@@ -187,6 +230,15 @@ class GovernanceRepository:
             # Avanzar la frontera temporal de revocación.
             rec.TRV_Fecha_Revocacion = now
             rec.TRV_Expira = expira
+        # Las sesiones abiertas quedan cerradas en "Sesiones activas".
+        from sqlalchemy import update as _update
+        from app.models.governance import Sesion
+        await self.db.execute(
+            _update(Sesion)
+            .where(Sesion.USU_Usuario == usuario_id, Sesion.SES_Cerrada_En.is_(None))
+            .values(SES_Cerrada_En=now, SES_Motivo_Cierre="revocacion_global")
+            .execution_options(synchronize_session=False)
+        )
         await self.db.flush()
 
     async def is_user_globally_revoked(
@@ -347,8 +399,10 @@ class GovernanceRepository:
         usuario_id: uuid.UUID | None = None,
         ip_origen: str | None = None,
         user_agent: str | None = None,
+        sede_id: int | None = None,
     ) -> AuditoriaSistema:
         log = AuditoriaSistema(
+            AUD_Sede=sede_id,
             AUD_Accion=accion,
             AUD_Entidad_Afectada=entidad,
             AUD_Snapshot_JSON=_make_json_safe(snapshot) if snapshot else None,

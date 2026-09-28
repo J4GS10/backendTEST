@@ -16,6 +16,7 @@ from app.schemas.software import (
     InstalacionDetalleResponse,
     InstalacionResponse,
     LicenciaCreate,
+    LicenciaClaveResponse,
     LicenciaResponse,
     LicenciaUpdate,
     SoftwareCreate,
@@ -186,6 +187,24 @@ async def get_licencia(id: int, service: SoftwareService = Depends(get_service))
     return await service.get_licencia(id)
 
 
+@router.get(
+    "/licencias/{id}/claves",
+    response_model=List[LicenciaClaveResponse],
+    dependencies=[Depends(require_admin)],
+)
+async def list_claves_licencia(
+    id: int,
+    request: Request,
+    current_user: CurrentUser,
+    service: SoftwareService = Depends(get_service),
+):
+    return await service.list_claves_licencia(
+        id,
+        usuario_id=current_user.USU_Usuario,
+        ip=get_client_ip(request),
+    )
+
+
 @router.patch("/licencias/{id}", response_model=LicenciaResponse, dependencies=[Depends(require_admin)])
 async def update_licencia(
     id: int,
@@ -223,6 +242,19 @@ async def list_instalaciones_activo(
     return await service.list_instalaciones_by_activo(activo_id, solo_activas=solo_activas)
 
 
+@router.get(
+    "/personas/{persona_id}/instalaciones",
+    response_model=List[InstalacionDetalleResponse],
+)
+async def list_instalaciones_persona(
+    persona_id: _uuid.UUID,
+    solo_activas: bool = True,
+    service: SoftwareService = Depends(get_service),
+):
+    """Lista las licencias asignadas directamente a una persona."""
+    return await service.list_instalaciones_by_persona(persona_id, solo_activas=solo_activas)
+
+
 # --- INSTALACIONES ---
 @router.post(
     "/instalaciones", response_model=InstalacionResponse, status_code=201,
@@ -240,15 +272,12 @@ async def registrar_instalacion(
     Asigna una licencia a un activo. Reserva el cupo atómicamente.
     Soporta cabecera 'Idempotency-Key' para evitar duplicados por reintentos.
     """
-    cached = await idempotency.lookup()
-    if cached is not None:
-        return cached
-
-    result = await service.registrar_instalacion(
-        schema, usuario_id=current_user.USU_Usuario, ip=get_client_ip(request)
+    return await idempotency.execute(
+        lambda: service.registrar_instalacion(
+            schema, usuario_id=current_user.USU_Usuario, ip=get_client_ip(request)
+        ),
+        status_code=201,
     )
-    await idempotency.store(result, status_code=201)
-    return result
 
 
 @router.post(

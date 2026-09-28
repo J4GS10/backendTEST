@@ -61,10 +61,10 @@ async def test_add_especificacion_requires_operativo(client, domain_seed, sessio
     # sa crea el CONSULTA
     sa_headers = {"Authorization": f"Bearer {await _token(client)}"}
     await client.post("/api/v1/org/usuarios", headers=sa_headers, json={
-        "USU_Username": "cons_spec", "USU_Password": "Consulta#2026",
-        "USU_Rol": "CONSULTA", "PER_Persona": str(p.PER_Persona)})
+        "USU_Username": "cons_spec", "USU_Password": "Kx7!Lectura#Q",
+        "USU_Rol": "CONSULTA", "USU_Alcance_Global": True, "PER_Persona": str(p.PER_Persona)})
     lr = await client.post("/api/v1/login/access-token",
-        data={"username": "cons_spec", "password": "Consulta#2026"},
+        data={"username": "cons_spec", "password": "Kx7!Lectura#Q"},
         headers={"Content-Type": "application/x-www-form-urlencoded"})
     con = {"Authorization": f"Bearer {lr.json()['access_token']}"}
     r = await client.post(f"/api/v1/core/activos/{domain_seed['act_1']}/especificaciones",

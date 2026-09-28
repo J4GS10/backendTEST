@@ -1,8 +1,8 @@
 """Servicio de mantenimientos."""
 from __future__ import annotations
 
-from app.core.errors import internal_error, utcnow_naive
-from app.core.transactional import commit_or_409
+from app.core.errors import utcnow_naive
+from app.core.transactional import schedule_post_commit, transactional
 
 import uuid
 from datetime import datetime
@@ -12,12 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.email import send_notification
 from app.models.catalogs import EstadoOperativo
 from app.models.organization import Persona
 from app.models.traceability import Mantenimiento
 from app.repositories.core import CoreRepository
 from app.repositories.governance import GovernanceRepository
 from app.repositories.maintenance import MaintenanceRepository
+from app.services.base import BaseService
 from app.schemas.maintenance import (
     DetalleCreate,
     MantenimientoCierre,
@@ -27,19 +29,24 @@ from app.schemas.maintenance import (
 )
 
 
-class MaintenanceService:
+class MaintenanceService(BaseService[MaintenanceRepository]):
+    repo_class = MaintenanceRepository
+
     def __init__(self, db: AsyncSession):
-        self.db = db
-        self.repo = MaintenanceRepository(db)
+        super().__init__(db)
         self.gov_repo = GovernanceRepository(db)
         self.core_repo = CoreRepository(db)
 
-    async def _commit(self):
-        await commit_or_409(self.db, where="MaintenanceService")
+    def _schedule_notification(self, template: str, context: dict, **kwargs) -> None:
+        schedule_post_commit(
+            self,
+            lambda: send_notification(template, context, **kwargs),
+        )
 
     # =====================================================================
     # TIPOS
     # =====================================================================
+    @transactional
     async def create_tipo(self, schema: TipoMantenimientoCreate, usuario_id=None, ip=None):
         obj = await self.repo.create_tipo(schema)
         await self.gov_repo.create_audit_log(
@@ -47,7 +54,6 @@ class MaintenanceService:
             {"nombre": schema.TMA_Nombre},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        await self._commit()
         return obj
 
     async def list_tipos(self):
@@ -59,6 +65,7 @@ class MaintenanceService:
             raise HTTPException(404, "MAINTENANCE_TYPE_NOT_FOUND")
         return obj
 
+    @transactional
     async def update_tipo(self, id: int, schema: TipoMantenimientoUpdate, usuario_id=None, ip=None):
         await self.get_tipo(id)
         obj = await self.repo.update_tipo(id, schema)
@@ -67,9 +74,9 @@ class MaintenanceService:
             {"id": id, "cambios": schema.model_dump(exclude_unset=True)},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        await self._commit()
         return obj
 
+    @transactional
     async def delete_tipo(self, id: int, usuario_id=None, ip=None):
         tipo = await self.get_tipo(id)
         if await self.repo.count_mantenimientos_by_tipo(id) > 0:
@@ -80,7 +87,6 @@ class MaintenanceService:
             {"id": id, "nombre": tipo.TMA_Nombre},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        await self._commit()
 
     # =====================================================================
     # MANTENIMIENTOS
@@ -94,6 +100,7 @@ class MaintenanceService:
             raise HTTPException(404, "MAINTENANCE_TICKET_NOT_FOUND")
         return obj
 
+    @transactional
     async def registrar_mantenimiento(
         self, schema: MantenimientoCreate, usuario_id: uuid.UUID | None = None, ip: str | None = None,
     ):
@@ -128,10 +135,8 @@ class MaintenanceService:
             await self.gov_repo.create_audit_log(
                 "CREATE", "INV_MANTENIMIENTO",
                 {"activo": str(schema.ACT_Activo), "falla": schema.MAN_Descripcion_Falla[:200]},
-                usuario_id=usuario_id, ip_origen=ip,
+                usuario_id=usuario_id, ip_origen=ip, sede_id=activo.SED_Sede,
             )
-            await self._commit()
-
             # Notificación post-commit
             try:
                 from app.core.email import send_notification
@@ -156,7 +161,7 @@ class MaintenanceService:
                         if per_op:
                             op_name = f"{per_op.PER_Primer_Nombre} {per_op.PER_Primer_Apellido}"
                             op_email = per_op.PER_Email_Corporativo
-                await send_notification(
+                self._schedule_notification(
                     "mantenimiento_abierto",
                     {
                         "codigo": activo.ACT_Codigo_Interno if activo else "",
@@ -174,17 +179,12 @@ class MaintenanceService:
                 pass
 
             return mantenimiento
-        except HTTPException:
-            await self.db.rollback(); raise
         except IntegrityError:
             # Choque del índice único parcial bajo concurrencia: otro request
             # abrió un ticket para el mismo activo entre el SELECT y el INSERT.
-            await self.db.rollback()
             raise HTTPException(409, "ASSET_ALREADY_HAS_OPEN_MAINTENANCE_TICKET")
-        except Exception as e:
-            await self.db.rollback()
-            raise internal_error(e, "TRANSACTION_FAILED")
 
+    @transactional
     async def agregar_detalle(
         self, mantenimiento_id: uuid.UUID, schema: DetalleCreate, usuario_id=None, ip=None,
     ):
@@ -197,13 +197,13 @@ class MaintenanceService:
             {"mantenimiento_id": str(mantenimiento_id), "accion": schema.DMA_Accion_Realizada[:200]},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        await self._commit()
         return obj
 
     async def list_detalles(self, mantenimiento_id: uuid.UUID):
         await self.get_mantenimiento(mantenimiento_id)
         return await self.repo.list_detalles(mantenimiento_id)
 
+    @transactional
     async def update_detalle(self, detalle_id: int, schema: DetalleCreate, usuario_id=None, ip=None):
         det = await self.repo.get_detalle_by_id(detalle_id)
         if not det:
@@ -217,9 +217,9 @@ class MaintenanceService:
             {"detalle_id": detalle_id, "cambios": schema.model_dump(exclude_unset=True)},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        await self._commit()
         return obj
 
+    @transactional
     async def delete_detalle(self, detalle_id: int, usuario_id=None, ip=None):
         det = await self.repo.get_detalle_by_id(detalle_id)
         if not det:
@@ -233,8 +233,8 @@ class MaintenanceService:
             {"detalle_id": detalle_id},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        await self._commit()
 
+    @transactional
     async def cerrar_mantenimiento(
         self, mantenimiento_id: uuid.UUID, schema: MantenimientoCierre,
         usuario_id: uuid.UUID | None = None, ip: str | None = None,
@@ -279,10 +279,8 @@ class MaintenanceService:
             await self.gov_repo.create_audit_log(
                 "CLOSE", "INV_MANTENIMIENTO",
                 {"ticket_id": str(mantenimiento_id), "costo_total": str(schema.MAN_Costo_Total)},
-                usuario_id=usuario_id, ip_origen=ip,
+                usuario_id=usuario_id, ip_origen=ip, sede_id=activo.SED_Sede if activo else None,
             )
-            await self._commit()
-
             # Notificación post-commit
             try:
                 from app.core.email import send_notification
@@ -303,7 +301,10 @@ class MaintenanceService:
                         if per_op:
                             op_name = f"{per_op.PER_Primer_Nombre} {per_op.PER_Primer_Apellido}"
                             op_email = per_op.PER_Email_Corporativo
-                await send_notification(
+                # Afectado = quien tiene el activo en custodia (para reglas
+                # de notificación: "notificar afectado" / "notificar jefe").
+                custodio = await self.db.get(_Per, mov_vigente.PER_Persona) if mov_vigente else None
+                self._schedule_notification(
                     "mantenimiento_cerrado",
                     {
                         "codigo": activo.ACT_Codigo_Interno if activo else "",
@@ -312,6 +313,7 @@ class MaintenanceService:
                         "estado_final": estado_final,
                     },
                     to=(),  # solo admins
+                    affected=[custodio.PER_Email_Corporativo] if custodio else (),
                     reply_to=op_email,
                     operator_name=op_name,
                     operator_role=op_role,
@@ -320,12 +322,10 @@ class MaintenanceService:
                 pass
 
             return closed
-        except HTTPException:
-            await self.db.rollback(); raise
-        except Exception as e:
-            await self.db.rollback()
-            raise internal_error(e, "TRANSACTION_FAILED")
+        except Exception:
+            raise
 
+    @transactional
     async def delete_mantenimiento(self, mantenimiento_id: uuid.UUID, usuario_id=None, ip=None):
         mant = await self.get_mantenimiento(mantenimiento_id)
         if not mant.MAN_Fecha_Cierre:
@@ -336,4 +336,3 @@ class MaintenanceService:
             {"ticket_id": str(mantenimiento_id)},
             usuario_id=usuario_id, ip_origen=ip,
         )
-        await self._commit()

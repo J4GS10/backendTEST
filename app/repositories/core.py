@@ -7,12 +7,14 @@ import uuid
 
 from app.models.core import Activo, Especificacion
 from app.models.catalogs import Modelo, Marca, TipoActivo, EstadoOperativo, TipoEspecificacion
-from app.schemas.core import ActivoCreate, EspecificacionCreate, ActivoUpdate, ActivoFilter
+from app.schemas.core import ActivoCreate, EspecificacionCreate, ActivoUpdate, ActivoFilter, EspecificacionDetalle
+from app.repositories.base import BaseRepository
 
 
-class CoreRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+class CoreRepository(BaseRepository["Activo"]):
+    model = Activo
+
+    def _pk_column(self): return Activo.ACT_Activo
 
     async def get_by_codigo_interno(self, codigo: str) -> Optional[Activo]:
         result = await self.db.execute(select(Activo).where(Activo.ACT_Codigo_Interno == codigo))
@@ -83,6 +85,20 @@ class CoreRepository:
         result = await self.db.execute(query)
         return result.scalars().all()
 
+    async def get_all_for_export(self, limit: int = 10000) -> List[Activo]:
+        """Carga en bloque las relaciones necesarias para exportación."""
+        query = (
+            select(Activo)
+            .options(
+                selectinload(Activo.modelo).selectinload(Modelo.marca),
+                selectinload(Activo.tipo_activo),
+                selectinload(Activo.estado_operativo),
+            )
+            .limit(limit)
+        )
+        result = await self.db.execute(query)
+        return result.scalars().all()
+
     async def count_activos(self) -> int:
         result = await self.db.execute(select(func.count()).select_from(Activo))
         return result.scalar() or 0
@@ -126,6 +142,9 @@ class CoreRepository:
         if filters.estado_operativo_id:
             conditions.append(Activo.EOP_Estado_Operativo == filters.estado_operativo_id)
 
+        if filters.sede_id:
+            conditions.append(Activo.SED_Sede == filters.sede_id)
+
         if filters.fecha_compra_start:
             conditions.append(Activo.ACT_Fecha_Compra >= filters.fecha_compra_start)
             
@@ -156,7 +175,7 @@ class CoreRepository:
     # =================================================================
     # ESPECIFICACIONES (características: RAM, disco, batería, etc.)
     # =================================================================
-    async def list_especificaciones(self, activo_id: uuid.UUID) -> list[dict]:
+    async def list_especificaciones(self, activo_id: uuid.UUID) -> list[EspecificacionDetalle]:
         """Lista enriquecida (con nombre + unidad del tipo) de un activo."""
         q = (
             select(
@@ -173,13 +192,13 @@ class CoreRepository:
         )
         rows = (await self.db.execute(q)).all()
         return [
-            {
-                "ESP_Especificacion": r[0],
-                "TES_Tipo_Especificacion": r[1],
-                "TES_Nombre": r[2],
-                "TES_Unidad_Medida": r[3],
-                "ESP_Valor": r[4],
-            }
+            EspecificacionDetalle(
+                ESP_Especificacion=r[0],
+                TES_Tipo_Especificacion=r[1],
+                TES_Nombre=r[2],
+                TES_Unidad_Medida=r[3],
+                ESP_Valor=r[4],
+            )
             for r in rows
         ]
 

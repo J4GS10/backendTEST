@@ -1,9 +1,10 @@
 """Adjuntos por activo: factura, foto, acta firmada escaneada, etc."""
 import uuid
 from typing import List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_client_ip, require_admin, require_operativo
@@ -74,11 +75,16 @@ async def upload_adjunto_orden(
 
 @router.get("/{id}/download")
 async def download_adjunto(id: uuid.UUID, service: AttachmentService = Depends(get_service)):
-    adjunto, abs_path = await service.get_for_download(id)
-    return FileResponse(
-        abs_path,
+    adjunto, content = await service.get_for_download(id)
+    return Response(
+        content=content,
         media_type=adjunto.ADJ_Tipo_MIME or "application/octet-stream",
-        filename=adjunto.ADJ_Nombre_Original,
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''"
+                f"{quote(adjunto.ADJ_Nombre_Original)}"
+            )
+        },
     )
 
 

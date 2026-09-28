@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.core import Activo
 from app.models.traceability import DetalleMantenimiento, Mantenimiento, TipoMantenimiento
+from app.repositories.base import BaseRepository
 from app.schemas.maintenance import (
     DetalleCreate,
     MantenimientoCreate,
@@ -20,9 +21,11 @@ from app.schemas.maintenance import (
 )
 
 
-class MaintenanceRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+class MaintenanceRepository(BaseRepository["Mantenimiento"]):
+    model = Mantenimiento
+
+    def _pk_column(self):
+        return Mantenimiento.MAN_Mantenimiento
 
     # =====================================================================
     # TIPOS

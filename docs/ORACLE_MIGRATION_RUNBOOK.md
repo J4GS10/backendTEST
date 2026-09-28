@@ -13,6 +13,23 @@
 
 ---
 
+## Estado implementado
+
+El repositorio incluye una lÃ­nea de migraciÃ³n Oracle independiente en
+`app/alembic_oracle/`, JSON portable (`CLOB` validado con `IS JSON`), Ã­ndices
+function-based y el trigger append-only en PL/SQL. Para una base Oracle vacÃ­a:
+
+```bash
+DB_ENGINE=oracle \
+DB_WRITE_DSN='oracle://usuario:password@host:1521/?service_name=SERVICIO' \
+alembic -n oracle upgrade head
+python scripts/oracle_schema_smoke.py
+```
+
+La certificaciÃ³n remota se ejecuta manualmente con el workflow
+`oracle-21c-validation`, que requiere el secreto de entorno `ORACLE_21C_DSN`.
+No se debe usar la cadena de migraciones PostgreSQL (`app/alembic/`) en Oracle.
+
 ## Pre-requisitos
 
 - Una instancia Oracle 21c (o 23ai) accesible. Para pruebas:
@@ -30,7 +47,7 @@
 
 ## Paso 1 — Dependencia del driver
 
-En `backend/inventarioTI-backend/requirements.txt` añade:
+En `codigo/inventarioTI-backend/requirements.txt` añade:
 
 ```
 oracledb>=2.2.0        # driver Oracle (python-oracledb), modo async + thin

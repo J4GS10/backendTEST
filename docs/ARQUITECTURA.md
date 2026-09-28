@@ -72,8 +72,10 @@ model
   (longitudes, rangos, formatos) alineada a la BD.
 - **Core** (`app/core/*.py`): infraestructura transversal (config, seguridad, caché,
   rate-limit, email, errores, decorador transaccional).
-- La transacción y el manejo de `IntegrityError → 409` están centralizados; el email es
-  best-effort **post-commit** (un fallo de SMTP nunca revierte la operación).
+- La transacción y el manejo de `IntegrityError → 409` están centralizados en
+  `@transactional`; los side effects externos se registran como hooks
+  **post-commit** para que un fallo de SMTP o notificación nunca revierta la
+  operación de base de datos.
 
 ## Patrón por feature (frontend)
 

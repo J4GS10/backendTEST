@@ -25,7 +25,7 @@ async def test_password_change_invalidates_old_tokens(client, auth_token, auth_h
     # Cambiar password
     r1 = await client.post(
         "/api/v1/me/password",
-        json={"current_password": "TestPassw0rd!", "new_password": "NewPassw0rd!2026"},
+        json={"current_password": "TestPassw0rd!", "new_password": "Nv8#Rotacion!Q"},
         headers=auth_headers,
     )
     assert r1.status_code == 204, r1.text
@@ -40,7 +40,7 @@ async def test_password_change_requires_current_password(client, auth_headers):
     """No se acepta cambio sin re-validar contraseña actual."""
     r = await client.post(
         "/api/v1/me/password",
-        json={"current_password": "WRONG_PWD!1", "new_password": "NewPassw0rd!2026"},
+        json={"current_password": "WRONG_PWD!1", "new_password": "Nv8#Rotacion!Q"},
         headers=auth_headers,
     )
     assert r.status_code == 400

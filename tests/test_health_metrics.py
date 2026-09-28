@@ -16,7 +16,13 @@ async def test_health_full_reachable(client, sa_user):
     assert "status" in body
     assert "components" in body
     assert "database" in body["components"]
+    assert "writer_database" in body["components"]
+    assert "read_replica" in body["components"]
+    assert "replica_lag_seconds" in body["components"]
     assert "redis" in body["components"]
+    assert "storage" in body["components"]
+    assert "smtp" in body["components"]
+    assert "read_routing" in body
     assert "version" in body
 
 
@@ -30,3 +36,7 @@ async def test_metrics_reachable(client, sa_user):
         assert "inv_activos_total" in body
         assert "inv_usuarios_activos" in body
         assert "inv_tokens_revocados" in body
+        assert "inv_db_replica_lag_seconds" in body
+        assert "inv_db_read_fallback_total" in body
+        assert "inv_storage_available" in body
+        assert "inv_smtp_delivery_errors_total" in body

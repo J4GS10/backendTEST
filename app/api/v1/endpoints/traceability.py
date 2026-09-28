@@ -98,13 +98,10 @@ async def registrar_movimiento(
     Asigna un activo. Cierra automáticamente la asignación vigente previa.
     Soporta 'Idempotency-Key' para deduplicar reintentos.
     """
-    cached = await idempotency.lookup()
-    if cached is not None:
-        return cached
-
-    result = await service.registrar_movimiento(schema, **_ctx(request, current_user))
-    await idempotency.store(result, status_code=201)
-    return result
+    return await idempotency.execute(
+        lambda: service.registrar_movimiento(schema, **_ctx(request, current_user)),
+        status_code=201,
+    )
 
 
 @router.post("/devolucion", status_code=200, dependencies=OPERATIVO)
@@ -198,6 +195,7 @@ async def descargar_acta(
     formato: str = Query("docx", pattern="^(docx|pdf)$", description="Formato: docx o pdf"),
     tipo: str = Query("entrega", pattern="^(entrega|descargo)$",
                       description="entrega (handover) o descargo (devolución/liberación)"),
+    lang: str = Query("es", pattern="^(es|en|it)$", description="Idioma del documento"),
     mensajero: str | None = Query(None, max_length=120,
                                   description="Nombre del mensajero externo que recibe (opcional)"),
     db: AsyncSession = Depends(get_db),
@@ -205,9 +203,15 @@ async def descargar_acta(
     """Genera el Acta de Entrega o la Hoja de Descargo (devolución) en Word o PDF."""
     from app.services.documents import DocumentService
     doc_service = DocumentService(db)
-    buffer = await doc_service.generar_acta_entrega(movimiento_id, formato=formato, tipo=tipo, mensajero=mensajero)
-    nombre = "Descargo" if tipo == "descargo" else "Entrega"
-    return _acta_response(buffer, f"Acta_{nombre}_{movimiento_id}", formato)
+    buffer = await doc_service.generar_acta_entrega(
+        movimiento_id,
+        formato=formato,
+        tipo=tipo,
+        mensajero=mensajero,
+        lang=lang,
+    )
+    from app.services.documents import acta_filename
+    return _acta_response(buffer, f"{acta_filename(tipo, lang)}_{movimiento_id}", formato)
 
 
 @router.post("/acta/lote", response_class=StreamingResponse, dependencies=OPERATIVO)
@@ -216,6 +220,7 @@ async def descargar_acta_multiple(
     formato: str = Query("docx", pattern="^(docx|pdf)$", description="Formato: docx o pdf"),
     tipo: str = Query("entrega", pattern="^(entrega|descargo)$",
                       description="entrega o descargo"),
+    lang: str = Query("es", pattern="^(es|en|it)$", description="Idioma del documento"),
     mensajero: str | None = Query(None, max_length=120,
                                   description="Nombre del mensajero externo que recibe (opcional)"),
     db: AsyncSession = Depends(get_db),
@@ -227,7 +232,14 @@ async def descargar_acta_multiple(
 
     from app.services.documents import DocumentService
     doc_service = DocumentService(db)
-    buffer = await doc_service.generar_acta_multiple(payload.movimientos_ids, formato=formato, tipo=tipo, mensajero=mensajero)
-    nombre = "Descargo" if tipo == "descargo" else "Entrega"
-    filename = f"Acta_{nombre}_Lote_{datetime.now().strftime('%Y%m%d_%H%M')}"
+    buffer = await doc_service.generar_acta_multiple(
+        payload.movimientos_ids,
+        formato=formato,
+        tipo=tipo,
+        mensajero=mensajero,
+        lang=lang,
+    )
+    from app.services.documents import acta_filename
+    batch = {"es": "Lote", "en": "Batch", "it": "Lotto"}.get(lang, "Lote")
+    filename = f"{acta_filename(tipo, lang)}_{batch}_{datetime.now().strftime('%Y%m%d_%H%M')}"
     return _acta_response(buffer, filename, formato)

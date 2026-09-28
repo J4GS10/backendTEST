@@ -8,7 +8,7 @@ deriva su proveedor a través de la orden, sin modificar INV_ACTIVO.
 import uuid
 from sqlalchemy import (
     Column, Integer, String, Boolean, Date, DateTime, ForeignKey, Numeric, Uuid,
-    func, CheckConstraint,
+    func, CheckConstraint, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -49,7 +49,7 @@ class OrdenCompra(Base):
     OCO_Fecha = Column(Date, nullable=False)
     # BORRADOR -> RECIBIDA | CANCELADA
     OCO_Estado = Column(String(15), nullable=False, default="BORRADOR")
-    OCO_Moneda = Column(String(3), nullable=False, default="USD")
+    OCO_Moneda = Column(String(3), nullable=False, default="GTQ")
     OCO_Total = Column(Numeric(14, 2), nullable=False, default=0)
     OCO_Notas = Column(String(500), nullable=True)
 
@@ -63,6 +63,13 @@ class OrdenCompra(Base):
         Uuid,
         ForeignKey("INV_USUARIO.USU_Usuario", ondelete="SET NULL"),
         nullable=True,
+    )
+    # Sede que recibe la compra (los activos recibidos nacen en esta sede).
+    SED_Sede = Column(
+        Integer,
+        ForeignKey("INV_SEDE.SED_Sede", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -78,6 +85,10 @@ class OrdenCompra(Base):
             name="ck_orden_estado_valido",
         ),
         CheckConstraint('"OCO_Total" >= 0', name="ck_orden_total_no_negativo"),
+        CheckConstraint(
+            "\"OCO_Moneda\" IN ('GTQ', 'USD', 'CHF')",
+            name="ck_orden_moneda_valida",
+        ),
     )
 
 
@@ -112,10 +123,46 @@ class OrdenCompraLinea(Base):
         ForeignKey("INV_CONSUMIBLE.CON_Consumible", ondelete="SET NULL"),
         nullable=True,
     )
+    LIC_Licencia = Column(
+        Integer,
+        ForeignKey("INV_LICENCIA.LIC_Licencia", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     orden = relationship("OrdenCompra", back_populates="lineas")
+    activos_recibidos = relationship(
+        "OrdenCompraLineaActivo",
+        back_populates="linea",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         CheckConstraint('"OCL_Cantidad" > 0', name="ck_linea_cantidad_positiva"),
         CheckConstraint('"OCL_Precio_Unitario" >= 0', name="ck_linea_precio_no_negativo"),
+    )
+
+
+class OrdenCompraLineaActivo(Base):
+    __tablename__ = "INV_ORDEN_COMPRA_LINEA_ACTIVO"
+
+    OLA_Orden_Linea_Activo = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    OCL_Linea = Column(
+        Integer,
+        ForeignKey("INV_ORDEN_COMPRA_LINEA.OCL_Linea", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ACT_Activo = Column(
+        Uuid,
+        ForeignKey("INV_ACTIVO.ACT_Activo", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    linea = relationship("OrdenCompraLinea", back_populates="activos_recibidos")
+
+    __table_args__ = (
+        UniqueConstraint("ACT_Activo", name="uq_orden_linea_activo_activo"),
     )
