@@ -5,6 +5,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from app.db.base import Base
+from app.core.currency import CURRENCY_SQL_LIST, DEFAULT_CURRENCY
 
 
 # ==========================================
@@ -22,6 +23,10 @@ class Activo(Base):
     ACT_Fecha_Compra = Column(Date, nullable=False)
     ACT_Fin_Garantia = Column(Date, nullable=True)
     ACT_Costo = Column(Numeric(12, 2), nullable=True)
+    # Moneda en que se pagó el costo (no se convierte).
+    ACT_Moneda = Column(
+        String(3), nullable=False, default=DEFAULT_CURRENCY, server_default=DEFAULT_CURRENCY,
+    )
 
     MOD_Modelo = Column(
         Integer,
@@ -76,6 +81,10 @@ class Activo(Base):
         CheckConstraint(
             '"ACT_Costo" IS NULL OR "ACT_Costo" >= 0',
             name="ck_activo_costo_no_negativo",
+        ),
+        CheckConstraint(
+            f'"ACT_Moneda" IN ({CURRENCY_SQL_LIST})',
+            name="ck_activo_moneda_valida",
         ),
         Index("ix_activo_hostname", "ACT_Hostname"),
     )

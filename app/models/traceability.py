@@ -5,6 +5,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from app.db.base import Base
+from app.core.currency import CURRENCY_SQL_LIST, DEFAULT_CURRENCY
 
 
 # ==========================================
@@ -104,6 +105,10 @@ class Mantenimiento(Base):
     MAN_Fecha_Cierre = Column(DateTime, nullable=True)
     MAN_Descripcion_Falla = Column(Text, nullable=False)
     MAN_Costo_Total = Column(Numeric(12, 2), default=0, nullable=False)
+    # Moneda del ticket: aplica al total y a cada detalle.
+    MAN_Moneda = Column(
+        String(3), nullable=False, default=DEFAULT_CURRENCY, server_default=DEFAULT_CURRENCY,
+    )
 
     ACT_Activo = Column(
         Uuid,
@@ -138,6 +143,10 @@ class Mantenimiento(Base):
         ),
         CheckConstraint(
             '"MAN_Costo_Total" >= 0', name="ck_mantenimiento_costo_no_negativo"
+        ),
+        CheckConstraint(
+            f'"MAN_Moneda" IN ({CURRENCY_SQL_LIST})',
+            name="ck_mantenimiento_moneda_valida",
         ),
         # Índice parcial UNIQUE: solo un mantenimiento ABIERTO por activo
         # (garantía de concurrencia a nivel BD, espejo del de INV_MOVIMIENTO).

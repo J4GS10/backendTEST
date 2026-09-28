@@ -36,11 +36,11 @@ _CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 _CSV_HEADERS = {
     "activos": {
         "es": ["Código interno", "Número de serie", "Hostname", "Tipo de activo", "Marca", "Modelo",
-               "Estado operativo", "Fecha de compra", "Vencimiento de garantía", "Costo"],
+               "Estado operativo", "Fecha de compra", "Vencimiento de garantía", "Costo", "Moneda"],
         "en": ["Internal code", "Serial number", "Hostname", "Asset type", "Brand", "Model",
-               "Operational status", "Purchase date", "Warranty expiration", "Cost"],
+               "Operational status", "Purchase date", "Warranty expiration", "Cost", "Currency"],
         "it": ["Codice interno", "Numero di serie", "Hostname", "Tipo di asset", "Marca", "Modello",
-               "Stato operativo", "Data di acquisto", "Scadenza garanzia", "Costo"],
+               "Stato operativo", "Data di acquisto", "Scadenza garanzia", "Costo", "Valuta"],
     },
     "movimientos": {
         "es": ["Fecha de asignación", "Fecha de devolución", "Código del activo", "Número de serie",
@@ -169,6 +169,7 @@ async def export_activos_csv(
             format_iso_date(a.ACT_Fecha_Compra),
             format_iso_date(a.ACT_Fin_Garantia),
             format_amount(a.ACT_Costo),
+            a.ACT_Moneda if a.ACT_Costo is not None else "",
         ])
     return _csv_response(headers, rows, _filename("activos", lang))
 

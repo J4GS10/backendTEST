@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 from datetime import date
 import uuid
 from decimal import Decimal
+from app.core.currency import DEFAULT_CURRENCY, CurrencyCode
 
 
 # ── Schemas anidados para ActivoDetailResponse ────────────────────────────────
@@ -75,6 +76,8 @@ class ActivoBase(BaseModel):
         decimal_places=2,
         json_schema_extra={"example": 1500.50} 
     )
+    # Moneda en que se pagó el costo (GTQ, USD, CHF). No se convierte.
+    ACT_Moneda: CurrencyCode = DEFAULT_CURRENCY
 
     # FKs
     MOD_Modelo: int
@@ -94,6 +97,7 @@ class ActivoUpdate(BaseModel):
     ACT_Serie_Fabricante: Optional[str] = Field(None, min_length=3, max_length=100)
     ACT_Hostname: Optional[str] = Field(None, max_length=100)
     ACT_Costo: Optional[Decimal] = Field(None, ge=0)
+    ACT_Moneda: Optional[CurrencyCode] = None
     
     MOD_Modelo: Optional[int] = None
     TAC_Tipo_Activo: Optional[int] = None

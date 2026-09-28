@@ -248,8 +248,10 @@ class MaintenanceService(BaseService[MaintenanceRepository]):
             if fecha < mant.MAN_Fecha_Ingreso:
                 raise HTTPException(400, "CLOSE_DATE_CANNOT_BE_BEFORE_ENTRY_DATE")
 
+            moneda = schema.MAN_Moneda or mant.MAN_Moneda
             closed = await self.repo.close_mantenimiento(
-                mantenimiento_id, fecha_cierre=fecha, costo_total=schema.MAN_Costo_Total
+                mantenimiento_id, fecha_cierre=fecha, costo_total=schema.MAN_Costo_Total,
+                moneda=moneda,
             )
 
             # Transición correcta al cerrar mantenimiento:
@@ -278,7 +280,8 @@ class MaintenanceService(BaseService[MaintenanceRepository]):
 
             await self.gov_repo.create_audit_log(
                 "CLOSE", "INV_MANTENIMIENTO",
-                {"ticket_id": str(mantenimiento_id), "costo_total": str(schema.MAN_Costo_Total)},
+                {"ticket_id": str(mantenimiento_id), "costo_total": str(schema.MAN_Costo_Total),
+                 "moneda": moneda},
                 usuario_id=usuario_id, ip_origen=ip, sede_id=activo.SED_Sede if activo else None,
             )
             # Notificación post-commit
@@ -308,7 +311,7 @@ class MaintenanceService(BaseService[MaintenanceRepository]):
                     "mantenimiento_cerrado",
                     {
                         "codigo": activo.ACT_Codigo_Interno if activo else "",
-                        "costo": str(schema.MAN_Costo_Total),
+                        "costo": f"{schema.MAN_Costo_Total} {moneda}",
                         "fecha": fecha.isoformat(),
                         "estado_final": estado_final,
                     },

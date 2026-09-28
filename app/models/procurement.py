@@ -13,6 +13,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+from app.core.currency import CURRENCY_SQL_LIST, DEFAULT_CURRENCY
 
 
 # ==========================================
@@ -49,7 +50,7 @@ class OrdenCompra(Base):
     OCO_Fecha = Column(Date, nullable=False)
     # BORRADOR -> RECIBIDA | CANCELADA
     OCO_Estado = Column(String(15), nullable=False, default="BORRADOR")
-    OCO_Moneda = Column(String(3), nullable=False, default="GTQ")
+    OCO_Moneda = Column(String(3), nullable=False, default=DEFAULT_CURRENCY)
     OCO_Total = Column(Numeric(14, 2), nullable=False, default=0)
     OCO_Notas = Column(String(500), nullable=True)
 
@@ -86,7 +87,7 @@ class OrdenCompra(Base):
         ),
         CheckConstraint('"OCO_Total" >= 0', name="ck_orden_total_no_negativo"),
         CheckConstraint(
-            "\"OCO_Moneda\" IN ('GTQ', 'USD', 'CHF')",
+            f'"OCO_Moneda" IN ({CURRENCY_SQL_LIST})',
             name="ck_orden_moneda_valida",
         ),
     )

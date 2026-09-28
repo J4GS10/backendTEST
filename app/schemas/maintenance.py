@@ -4,6 +4,8 @@ from datetime import datetime
 from decimal import Decimal
 import uuid
 
+from app.core.currency import DEFAULT_CURRENCY, CurrencyCode
+
 # --- TIPO MANTENIMIENTO ---
 class TipoMantenimientoBase(BaseModel):
     TMA_Nombre: str = Field(..., min_length=3, max_length=50)
@@ -37,6 +39,8 @@ class MantenimientoBase(BaseModel):
     TMA_Tipo_Mantenimiento: int
     MAN_Descripcion_Falla: str
     MAN_Costo_Total: Decimal = Field(default=0, ge=0)
+    # Moneda del ticket (aplica al total y a los detalles).
+    MAN_Moneda: CurrencyCode = DEFAULT_CURRENCY
 
 class MantenimientoCreate(MantenimientoBase):
     # Cota de longitud SOLO en la entrada (la base queda laxa para que los
@@ -47,6 +51,8 @@ class MantenimientoCreate(MantenimientoBase):
 
 class MantenimientoCierre(BaseModel):
     MAN_Costo_Total: Decimal = Field(..., ge=0)
+    # Si se omite, se conserva la moneda con que se abrió el ticket.
+    MAN_Moneda: Optional[CurrencyCode] = None
     MAN_Fecha_Cierre: Optional[datetime] = None
 
 

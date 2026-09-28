@@ -10,6 +10,11 @@ from app.models.traceability import Mantenimiento, Movimiento
 from app.models.software import Licencia, Software
 
 
+def _por_moneda(rows) -> dict[str, float]:
+    """[(moneda, suma), ...] → {"GTQ": 1500.0, ...}, sin monedas en cero."""
+    return {moneda: float(total) for moneda, total in rows if moneda and total}
+
+
 class StatsService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -77,19 +82,24 @@ class StatsService:
             select(func.count()).select_from(Mantenimiento).where(Mantenimiento.MAN_Fecha_Cierre.is_(None))
         )).scalar() or 0
         mant_total = (await db.execute(select(func.count()).select_from(Mantenimiento))).scalar() or 0
-        costo_mantenimiento = (await db.execute(
-            select(func.coalesce(func.sum(Mantenimiento.MAN_Costo_Total), 0))
-        )).scalar() or 0
+        # Montos agrupados por moneda: nunca se suman quetzales con dólares.
+        costo_mantenimiento = _por_moneda((await db.execute(
+            select(Mantenimiento.MAN_Moneda, func.coalesce(func.sum(Mantenimiento.MAN_Costo_Total), 0))
+            .group_by(Mantenimiento.MAN_Moneda)
+        )).all())
 
         # --- Valor del inventario (activo vs. baja) ---
         baja_id = (await db.execute(
             select(EstadoOperativo.EOP_Estado_Operativo).where(EstadoOperativo.EOP_Nombre.ilike("Baja"))
         )).scalar()
-        costo_total = (await db.execute(
-            select(func.coalesce(func.sum(Activo.ACT_Costo), 0))
-            .where(Activo.EOP_Estado_Operativo != baja_id) if baja_id else
-            select(func.coalesce(func.sum(Activo.ACT_Costo), 0))
-        )).scalar() or 0
+        q_costo = (
+            select(Activo.ACT_Moneda, func.coalesce(func.sum(Activo.ACT_Costo), 0))
+            .where(Activo.ACT_Costo.isnot(None))
+            .group_by(Activo.ACT_Moneda)
+        )
+        if baja_id:
+            q_costo = q_costo.where(Activo.EOP_Estado_Operativo != baja_id)
+        costo_total = _por_moneda((await db.execute(q_costo)).all())
 
         # --- Licencias ---
         lic_total, lic_usadas = (await db.execute(
@@ -127,7 +137,8 @@ class StatsService:
             "garantias_por_vencer": garantias_por_vencer,
             "garantias_por_vencer_total": len(garantias_por_vencer),
             "garantias_vencidas": vencidas,
-            "costo_inventario": float(costo_total),
-            "costo_mantenimiento": float(costo_mantenimiento),
+            # {"GTQ": 1500.0, "USD": 820.5}: un total por moneda.
+            "costo_inventario_por_moneda": costo_total,
+            "costo_mantenimiento_por_moneda": costo_mantenimiento,
             "licencias_por_agotar": licencias_por_agotar,
         }

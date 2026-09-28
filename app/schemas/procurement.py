@@ -3,12 +3,10 @@ from datetime import date, datetime
 from decimal import Decimal
 import uuid
 
-from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator, model_validator
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, model_validator
 
+from app.core.currency import DEFAULT_CURRENCY, CurrencyCode
 from app.schemas.software import LicenciaClaveCreate
-
-
-SUPPORTED_CURRENCIES = {"GTQ", "USD", "CHF"}
 
 
 # =======================
@@ -73,21 +71,13 @@ class LineaResponse(BaseModel):
 class OrdenCreate(BaseModel):
     OCO_Numero: str = Field(..., min_length=1, max_length=50)
     OCO_Fecha: date
-    OCO_Moneda: str = Field("GTQ", min_length=3, max_length=3)
+    OCO_Moneda: CurrencyCode = DEFAULT_CURRENCY
     OCO_Notas: Optional[str] = Field(None, max_length=500)
     PRV_Proveedor: int
     # Sede que recibe la compra (alcance de datos). Los activos recibidos
     # nacen en esta sede.
     SED_Sede: Optional[int] = None
     lineas: List[LineaCreate] = Field(default_factory=list)
-
-    @field_validator("OCO_Moneda")
-    @classmethod
-    def _moneda_soportada(cls, value: str) -> str:
-        code = (value or "").upper()
-        if code not in SUPPORTED_CURRENCIES:
-            raise ValueError("UNSUPPORTED_CURRENCY")
-        return code
 
 
 class OrdenEstadoUpdate(BaseModel):

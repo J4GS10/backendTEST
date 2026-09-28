@@ -38,7 +38,7 @@ async def test_export_activos_csv_estructura(client, auth_headers, domain_seed):
     headers, rows = _parse_csv(r.text)
     assert headers == [
         "Código interno", "Número de serie", "Hostname", "Tipo de activo",
-        "Marca", "Modelo", "Estado operativo", "Fecha de compra", "Vencimiento de garantía", "Costo",
+        "Marca", "Modelo", "Estado operativo", "Fecha de compra", "Vencimiento de garantía", "Costo", "Moneda",
     ]
     assert len(rows) == 2  # LAP-001 + LAP-002
     codigos = {row[0] for row in rows}

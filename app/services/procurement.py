@@ -269,6 +269,8 @@ class ProcurementService(BaseService[ProcurementRepository]):
                 ACT_Fecha_Compra=ra.ACT_Fecha_Compra,
                 ACT_Fin_Garantia=ra.ACT_Fin_Garantia,
                 ACT_Costo=ra.ACT_Costo if ra.ACT_Costo is not None else lineas_validas[ra.OCL_Linea].OCL_Precio_Unitario,
+                # El costo del activo está en la moneda en que se pagó la orden.
+                ACT_Moneda=orden.OCO_Moneda,
                 MOD_Modelo=ra.MOD_Modelo,
                 TAC_Tipo_Activo=ra.TAC_Tipo_Activo,
                 EOP_Estado_Operativo=estado_disp.EOP_Estado_Operativo,
